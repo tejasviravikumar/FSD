@@ -1,0 +1,718 @@
+openapi: 3.0.3
+info:
+  title: Training and Certification API
+  version: 1.0.0
+  description: >-
+    Versioned Nexora training backend. JSON APIs use the success/data/message/meta envelope;
+    report endpoints also return formula-safe CSV when format=csv. Trainer and manager
+    access is scoped to assigned courses and active direct reportees respectively.
+servers:
+  - url: /api/v1
+security:
+  - bearerAuth: []
+paths:
+  /courses:
+    get:
+      summary: List courses visible to the caller
+      x-roles: [admin, trainer, employee]
+      parameters:
+        - {in: query, name: domain, schema: {type: string, pattern: '^[a-fA-F0-9]{24}$'}}
+        - {in: query, name: status, schema: {type: string, enum: [draft, under_review, published, archived, rejected]}}
+        - {in: query, name: mandatory, schema: {type: boolean}}
+        - {in: query, name: search, schema: {type: string, maxLength: 100}}
+        - {in: query, name: page, schema: {type: integer, minimum: 1, default: 1}}
+        - {in: query, name: limit, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+        - {in: query, name: sort, schema: {type: string, enum: [title, createdAt, updatedAt, publishedAt, version]}}
+        - {in: query, name: order, schema: {type: string, enum: [asc, desc]}}
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+        '401': {$ref: '#/components/responses/Error'}
+    post:
+      summary: Create a draft course
+      x-roles: [trainer, admin]
+      requestBody: {$ref: '#/components/requestBodies/Course'}
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+        '403': {$ref: '#/components/responses/Error'}
+  /courses/{id}:
+    parameters: [{$ref: '#/components/parameters/id'}]
+    get:
+      summary: Read a course in the caller's scope
+      x-roles: [admin, trainer, assigned employee]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '404': {$ref: '#/components/responses/Error'}}
+    patch:
+      summary: Update a draft or rejected course
+      x-roles: [trainer owner, admin]
+      requestBody: {$ref: '#/components/requestBodies/CoursePatch'}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '422': {$ref: '#/components/responses/Error'}}
+    delete:
+      summary: Delete an unassigned draft
+      x-roles: [admin]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /courses/{id}/submit:
+    post:
+      summary: Submit complete course for review
+      x-roles: [trainer owner]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '422': {$ref: '#/components/responses/Error'}}
+  /courses/{id}/approve:
+    post:
+      summary: Approve a course under review
+      x-roles: [admin]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '422': {$ref: '#/components/responses/Error'}}
+  /courses/{id}/reject:
+    post:
+      summary: Reject a course under review
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [notes], properties: {notes: {type: string, minLength: 1, maxLength: 1000}}, additionalProperties: false}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '422': {$ref: '#/components/responses/Error'}}
+  /courses/{id}/archive:
+    post:
+      summary: Archive a published course
+      x-roles: [trainer owner, admin]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '422': {$ref: '#/components/responses/Error'}}
+  /courses/{id}/new-version:
+    post:
+      summary: Create or return the next draft version
+      x-roles: [trainer owner, admin]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '422': {$ref: '#/components/responses/Error'}}
+  /courses/{id}/modules:
+    post:
+      summary: Add a module to a draft or rejected course
+      x-roles: [trainer owner, admin]
+      requestBody: {$ref: '#/components/requestBodies/Module'}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '422': {$ref: '#/components/responses/Error'}}
+  /courses/{id}/modules/{moduleId}:
+    patch:
+      summary: Update a module
+      x-roles: [trainer owner, admin]
+      parameters: [{$ref: '#/components/parameters/id'}, {in: path, name: moduleId, required: true, schema: {type: string, pattern: '^[a-fA-F0-9]{24}$'}}]
+      requestBody: {$ref: '#/components/requestBodies/ModulePatch'}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '404': {$ref: '#/components/responses/Error'}}
+    delete:
+      summary: Delete a module from a draft or rejected course
+      x-roles: [trainer owner, admin]
+      parameters: [{$ref: '#/components/parameters/id'}, {in: path, name: moduleId, required: true, schema: {type: string, pattern: '^[a-fA-F0-9]{24}$'}}]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '422': {$ref: '#/components/responses/Error'}}
+  /courses/{id}/modules/reorder:
+    patch:
+      summary: Set module order using every existing ID exactly once
+      x-roles: [trainer owner, admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [order], properties: {order: {type: array, maxItems: 100, items: {type: string, pattern: '^[a-fA-F0-9]{24}$'}}}, additionalProperties: false}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '422': {$ref: '#/components/responses/Error'}}
+  /courses/{id}/assessment:
+    put:
+      summary: Create or replace an assessment
+      x-roles: [trainer owner, admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {$ref: '#/components/requestBodies/Assessment'}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '400': {$ref: '#/components/responses/Error'}}
+    get:
+      summary: Read assessment including correct answers
+      x-roles: [trainer owner, admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '403': {$ref: '#/components/responses/Error'}}
+  /modules/validate-youtube:
+    post:
+      summary: Parse an allow-listed HTTPS YouTube URL and optionally retrieve metadata
+      x-roles: [trainer, admin]
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [url], properties: {url: {type: string, format: uri}, title: {type: string, maxLength: 200}, durationSeconds: {type: integer, minimum: 1, maximum: 86400}}, additionalProperties: false}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '400': {$ref: '#/components/responses/Error'}, '502': {$ref: '#/components/responses/Error'}}
+  /courses/{id}/uploads:
+    post:
+      summary: Store a private PDF, JPEG, or PNG for a draft course
+      x-roles: [trainer owner, admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: {type: object, required: [file], properties: {file: {type: string, format: binary}}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '400': {$ref: '#/components/responses/Error'}, '429': {$ref: '#/components/responses/Error'}}
+  /uploads/{id}:
+    get:
+      summary: Download an upload through its course authorization scope
+      x-roles: [admin, trainer, assigned employee]
+      parameters: [{in: path, name: id, required: true, schema: {type: string, pattern: '^[a-fA-F0-9]{24}$'}}]
+      responses:
+        '200': {description: Private file bytes, content: {application/pdf: {schema: {type: string, format: binary}}, image/jpeg: {schema: {type: string, format: binary}}, image/png: {schema: {type: string, format: binary}}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /rules:
+    get:
+      summary: List assignment rules; trainers see rules targeting courses in their domains
+      x-roles: [admin, trainer]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '401': {$ref: '#/components/responses/Error'}, '403': {$ref: '#/components/responses/Error'}}
+    post:
+      summary: Create a rule targeting a published course
+      x-roles: [admin]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AssignmentRule'}}}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '422': {$ref: '#/components/responses/Error'}}
+  /rules/run:
+    post:
+      summary: Evaluate all active assignment rules idempotently
+      x-roles: [admin]
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+  /rules/{id}:
+    parameters: [{$ref: '#/components/parameters/id'}]
+    patch:
+      summary: Update an assignment rule
+      x-roles: [admin]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AssignmentRulePatch'}}}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '404': {$ref: '#/components/responses/Error'}}
+    delete:
+      summary: Delete a rule and cancel only its not started assignments
+      x-roles: [admin]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '404': {$ref: '#/components/responses/Error'}}
+  /rules/{id}/preview:
+    parameters: [{$ref: '#/components/parameters/id'}]
+    post:
+      summary: Preview matching employees without creating assignments
+      x-roles: [admin]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '404': {$ref: '#/components/responses/Error'}}
+  /assignments:
+    get:
+      summary: List assignments; managers are scoped to active reportees
+      x-roles: [admin, manager]
+      parameters:
+        - {in: query, name: employeeId, schema: {type: string, pattern: '^[a-fA-F0-9]{24}$'}}
+        - {in: query, name: courseId, schema: {type: string, pattern: '^[a-fA-F0-9]{24}$'}}
+        - {in: query, name: domainId, schema: {type: string, pattern: '^[a-fA-F0-9]{24}$'}}
+        - {in: query, name: status, schema: {type: string, enum: [not_started, in_progress, completed, overdue, expired, cancelled]}}
+        - {in: query, name: overdue, schema: {type: boolean}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '403': {$ref: '#/components/responses/Error'}}
+    post:
+      summary: Assign a published course to one employee, many employees, or a filtered group (maximum 1000)
+      x-roles: [admin, manager]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [courseId]
+              additionalProperties: false
+              properties:
+                courseId: {type: string}
+                employeeId: {type: string}
+                employeeIds: {type: array, maxItems: 1000, items: {type: string}}
+                filter: {type: object}
+                dueDate: {type: string, format: date-time}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '404': {$ref: '#/components/responses/Error'}, '422': {$ref: '#/components/responses/Error'}}
+  /assignments/me:
+    get:
+      summary: List the current employee's assignments
+      x-roles: [employee]
+      parameters: [{in: query, name: status, schema: {type: string}}, {in: query, name: dueBefore, schema: {type: string, format: date-time}}]
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+  /assignments/{id}:
+    parameters: [{$ref: '#/components/parameters/id'}]
+    get:
+      summary: Read an assignment and module progress within owner or manager scope
+      x-roles: [admin, manager, owner employee]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '404': {$ref: '#/components/responses/Error'}}
+    patch:
+      summary: Change the due date or cancel an assignment
+      x-roles: [admin, manager]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              additionalProperties: false
+              properties: {dueDate: {type: string, format: date-time, nullable: true}, cancel: {type: boolean}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /assignments/{id}/modules/{moduleId}/progress:
+    put:
+      summary: Record throttled, monotonic video progress for the assignment owner
+      x-roles: [owner employee]
+      parameters: [{$ref: '#/components/parameters/id'}, {in: path, name: moduleId, required: true, schema: {type: string, pattern: '^[a-fA-F0-9]{24}$'}}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [watchedSeconds, lastPositionSeconds, durationSeconds]
+              additionalProperties: false
+              properties: {watchedSeconds: {type: number, minimum: 0}, lastPositionSeconds: {type: number, minimum: 0}, durationSeconds: {type: number, exclusiveMinimum: 0}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '403': {$ref: '#/components/responses/Error'}, '422': {$ref: '#/components/responses/Error'}}
+  /assignments/{id}/modules/{moduleId}/complete:
+    post:
+      summary: Mark a PDF, note, or link module complete for its owner
+      x-roles: [owner employee]
+      parameters: [{$ref: '#/components/parameters/id'}, {in: path, name: moduleId, required: true, schema: {type: string}}]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '404': {$ref: '#/components/responses/Error'}}
+  /assignments/{id}/attempts:
+    parameters: [{$ref: '#/components/parameters/id'}]
+    get:
+      summary: List attempts for owner, administrator, or course trainer
+      x-roles: [owner employee, admin, trainer]
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+    post:
+      summary: Start an assessment after completing required modules
+      x-roles: [owner employee]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /attempts/{id}/submit:
+    parameters: [{$ref: '#/components/parameters/id'}]
+    post:
+      summary: Submit answers for server side grading
+      x-roles: [owner employee]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answers]
+              additionalProperties: false
+              properties: {answers: {type: object}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '422': {$ref: '#/components/responses/Error'}}
+  /admin/repair/certificates:
+    post:
+      summary: Reconcile completed assignments and their certificates
+      x-roles: [admin]
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+  /certificates/me:
+    get:
+      summary: List certificates owned by the current employee
+      x-roles: [employee]
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+  /certificates:
+    get:
+      summary: List certificates within administrator, manager reportee, or trainer course scope
+      x-roles: [admin, manager, trainer]
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+    post:
+      summary: Upload an external certificate for verification
+      x-roles: [employee self, admin]
+      requestBody: {required: true, content: {multipart/form-data: {schema: {type: object, required: [courseId, file], properties: {courseId: {type: string}, employeeId: {type: string}, expiryDate: {type: string, format: date-time}, file: {type: string, format: binary}}}}}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '400': {$ref: '#/components/responses/Error'}}
+  /certificates/expiring:
+    get:
+      summary: List certificates expiring within the requested number of days; trainers see certificates for their own courses
+      x-roles: [admin, manager, trainer]
+      parameters: [{in: query, name: days, schema: {type: integer, minimum: 1, maximum: 365, default: 60}}]
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+  /certificates/{id}/verify:
+    patch:
+      summary: Verify an external certificate; trainers are restricted to their domains
+      x-roles: [admin, trainer]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '403': {$ref: '#/components/responses/Error'}}
+  /certificates/{id}/revoke:
+    patch:
+      summary: Revoke a certificate with an audit reason
+      x-roles: [admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              additionalProperties: false
+              properties: {reason: {type: string, minLength: 1, maxLength: 1000}}
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+  /certificates/{id}/file:
+    get:
+      summary: Download a certificate after owner, manager, administrator, or trainer domain authorization
+      x-roles: [owner employee, admin, manager, trainer]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'200': {description: Private certificate file bytes}, '404': {$ref: '#/components/responses/Error'}}
+  /certificates/verify/{certificateNumber}:
+    get:
+      summary: Public rate limited verification returning only validity and certificate holder fields
+      security: []
+      x-roles: [public]
+      parameters: [{in: path, name: certificateNumber, required: true, schema: {type: string, pattern: '^NEX-[A-Z0-9]{1,8}-\\d{4}-\\d{6}$'}}]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '404': {$ref: '#/components/responses/Error'}, '429': {$ref: '#/components/responses/Error'}}
+  /users/{id}/compliance:
+    get:
+      summary: Read mandatory course compliance in employee or manager scope
+      x-roles: [admin, manager, owner employee]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '404': {$ref: '#/components/responses/Error'}}
+  /settings:
+    get:
+      summary: Read application settings
+      x-roles: [admin]
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+        '403': {$ref: '#/components/responses/Error'}
+    patch:
+      summary: Update reminder, expiry, and lockout settings
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reminderThresholds: {type: array, minItems: 1, maxItems: 10, items: {type: integer, minimum: 0, maximum: 3650}}
+                certificateExpiringSoonDays: {type: integer, minimum: 1, maximum: 365}
+                certificateRenewalDays: {type: integer, minimum: 1, maximum: 365}
+                lockoutFailures: {type: integer, minimum: 3, maximum: 20}
+                lockoutMinutes: {type: integer, minimum: 1, maximum: 1440}
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+        '422': {$ref: '#/components/responses/Error'}
+  /notifications:
+    get:
+      summary: List the caller's notifications
+      x-roles: [admin, trainer, employee]
+      parameters:
+        - {in: query, name: page, schema: {type: integer, minimum: 1, default: 1}}
+        - {in: query, name: limit, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+        - {in: query, name: unreadOnly, schema: {type: string, enum: ['true', 'false']}}
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+  /notifications/read-all:
+    patch:
+      summary: Mark the caller's notifications as read
+      x-roles: [admin, trainer, employee]
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+  /notifications/{id}/read:
+    patch:
+      summary: Mark one caller-owned notification as read
+      x-roles: [admin, trainer, employee]
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, pattern: '^[a-fA-F0-9]{24}$'}}
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+        '404': {$ref: '#/components/responses/Error'}
+  /reports/compliance:
+    get:
+      summary: Report mandatory course compliance grouped by domain, location, and course
+      x-roles: [admin, manager, trainer]
+      parameters:
+        - {in: query, name: format, schema: {type: string, enum: [json, csv]}}
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+  /reports/completion:
+    get:
+      summary: Report completed assignments
+      x-roles: [admin, manager, trainer]
+      parameters:
+        - {in: query, name: format, schema: {type: string, enum: [json, csv]}}
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+  /reports/expiry-forecast:
+    get:
+      summary: Forecast certificate expiry
+      x-roles: [admin, manager, trainer]
+      parameters:
+        - {in: query, name: months, schema: {type: integer, minimum: 1, maximum: 36, default: 3}}
+        - {in: query, name: format, schema: {type: string, enum: [json, csv]}}
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+  /reports/overdue:
+    get:
+      summary: Report overdue assignments
+      x-roles: [admin, manager, trainer]
+      parameters:
+        - {in: query, name: format, schema: {type: string, enum: [json, csv]}}
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+  /reports/trainer/{courseId}:
+    get:
+      summary: Report assignments for a course; trainers can access only courses they own
+      x-roles: [admin, manager, trainer]
+      parameters:
+        - {in: path, name: courseId, required: true, schema: {type: string, pattern: '^[a-fA-F0-9]{24}$'}}
+        - {in: query, name: format, schema: {type: string, enum: [json, csv]}}
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+  /reports/assessment-quality/{courseId}:
+    get:
+      summary: Report per-question assessment pass rates for a course
+      x-roles: [admin, manager, trainer]
+      parameters:
+        - {in: path, name: courseId, required: true, schema: {type: string, pattern: '^[a-fA-F0-9]{24}$'}}
+        - {in: query, name: format, schema: {type: string, enum: [json, csv]}}
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+  /audit-logs:
+    get:
+      summary: Search audit events
+      x-roles: [admin]
+      parameters:
+        - {in: query, name: actorId, schema: {type: string, pattern: '^[a-fA-F0-9]{24}$'}}
+        - {in: query, name: entityType, schema: {type: string}}
+        - {in: query, name: entityId, schema: {type: string, pattern: '^[a-fA-F0-9]{24}$'}}
+        - {in: query, name: action, schema: {type: string}}
+        - {in: query, name: from, schema: {type: string, format: date-time}}
+        - {in: query, name: to, schema: {type: string, format: date-time}}
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+  /admin/jobs/{jobName}/run:
+    post:
+      summary: Run one scheduled job immediately
+      description: Runs the same idempotent handler as the cron schedule. Allowed job names are nightly, reminders, and youtube.
+      x-roles: [admin]
+      parameters:
+        - {in: path, name: jobName, required: true, schema: {type: string, enum: [nightly, reminders, youtube]}}
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+        '403': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /auth/login:
+    post:
+      summary: Authenticate with email and password
+      security: []
+      x-roles: [public]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [email, password], properties: {email: {type: string, format: email}, password: {type: string, minLength: 1}}, additionalProperties: false}}}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '401': {$ref: '#/components/responses/Error'}, '429': {$ref: '#/components/responses/Error'}}
+  /auth/refresh:
+    post:
+      summary: Rotate the refresh token cookie
+      security: []
+      x-roles: [public]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '401': {$ref: '#/components/responses/Error'}, '403': {$ref: '#/components/responses/Error'}}
+  /auth/logout:
+    post:
+      summary: Revoke the current refresh session
+      x-roles: [admin, trainer, employee]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '401': {$ref: '#/components/responses/Error'}}
+  /auth/logout-all:
+    post:
+      summary: Revoke all refresh sessions for the caller
+      x-roles: [admin, trainer, employee]
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+  /auth/me:
+    get:
+      summary: Read the authenticated profile
+      x-roles: [admin, trainer, employee]
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+  /auth/change-password:
+    post:
+      summary: Change the authenticated user's password
+      x-roles: [admin, trainer, employee]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [currentPassword, newPassword], properties: {currentPassword: {type: string}, newPassword: {type: string, minLength: 10}}, additionalProperties: false}}}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '422': {$ref: '#/components/responses/Error'}}
+  /auth/forgot-password:
+    post:
+      summary: Request a password reset without disclosing account existence
+      security: []
+      x-roles: [public]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [email], properties: {email: {type: string, format: email}}, additionalProperties: false}}}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '429': {$ref: '#/components/responses/Error'}}
+  /auth/reset-password:
+    post:
+      summary: Complete a single-use password reset
+      security: []
+      x-roles: [public]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [token, password], properties: {token: {type: string}, password: {type: string, minLength: 10}}, additionalProperties: false}}}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '422': {$ref: '#/components/responses/Error'}}
+  /users:
+    get:
+      summary: List users within administrator or manager reportee scope
+      x-roles: [admin, manager]
+      parameters: [{in: query, name: page, schema: {type: integer, minimum: 1}}, {in: query, name: limit, schema: {type: integer, minimum: 1, maximum: 100}}, {in: query, name: search, schema: {type: string}}, {in: query, name: domainId, schema: {type: string}}, {in: query, name: role, schema: {type: string, enum: [admin, trainer, employee]}}, {in: query, name: status, schema: {type: string}}, {in: query, name: level, schema: {type: string}}, {in: query, name: location, schema: {type: string}}]
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+    post:
+      summary: Create a user
+      x-roles: [admin]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [name, email, password], additionalProperties: false, properties: {name: {type: string, maxLength: 120}, email: {type: string, format: email}, phone: {type: string, maxLength: 32}, password: {type: string, minLength: 10}, role: {type: string, enum: [admin, trainer, employee]}, domainId: {type: string, pattern: '^[a-fA-F0-9]{24}$'}, trainerDomains: {type: array, items: {type: string, pattern: '^[a-fA-F0-9]{24}$'}}, designation: {type: string}, level: {type: string}, location: {type: string}, tags: {type: array, items: {type: string}}, managerId: {type: string, pattern: '^[a-fA-F0-9]{24}$'}}}}}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /users/import:
+    post:
+      summary: Import users from a bounded CSV upload
+      x-roles: [admin]
+      requestBody: {required: true, content: {multipart/form-data: {schema: {type: object, required: [file], properties: {file: {type: string, format: binary}}}}}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '422': {$ref: '#/components/responses/Error'}}
+  /users/{id}:
+    parameters: [{$ref: '#/components/parameters/id'}]
+    get:
+      summary: Read a user within self or reportee scope
+      x-roles: [admin, manager, employee]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '404': {$ref: '#/components/responses/Error'}}
+    patch:
+      summary: Update an allowed user profile field
+      x-roles: [admin, employee]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, minProperties: 1, properties: {name: {type: string}, phone: {type: string}, designation: {type: string}, level: {type: string}, location: {type: string}, role: {type: string, enum: [admin, trainer, employee]}, domainId: {type: string, pattern: '^[a-fA-F0-9]{24}$'}, managerId: {type: string, pattern: '^[a-fA-F0-9]{24}$'}, trainerDomains: {type: array, items: {type: string, pattern: '^[a-fA-F0-9]{24}$'}}, tags: {type: array, items: {type: string}}}}}}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '422': {$ref: '#/components/responses/Error'}}
+    delete:
+      summary: Deactivate a user
+      x-roles: [admin]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /users/{id}/status:
+    patch:
+      summary: Activate or deactivate a user
+      x-roles: [admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [status], properties: {status: {type: string, enum: [active, inactive]}}, additionalProperties: false}}}}
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+  /domains:
+    get:
+      summary: List active domains
+      x-roles: [admin, trainer, employee]
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+    post:
+      summary: Create a domain
+      x-roles: [admin]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [name], properties: {name: {type: string}, description: {type: string}, isCommon: {type: boolean}}, additionalProperties: false}}}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /domains/{id}:
+    parameters: [{$ref: '#/components/parameters/id'}]
+    get:
+      summary: Read a domain
+      x-roles: [admin, trainer, employee]
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+    patch:
+      summary: Update a domain
+      x-roles: [admin]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, minProperties: 1}}}}
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+    delete:
+      summary: Deactivate a domain without active users or courses
+      x-roles: [admin]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '409': {$ref: '#/components/responses/Error'}}
+  /domains/{id}/stats:
+    get:
+      summary: Read domain course and assignment counts
+      x-roles: [admin, trainer]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+  /domains/{id}/trainers:
+    put:
+      summary: Replace trainers assigned to a domain
+      x-roles: [admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [trainerIds], properties: {trainerIds: {type: array, items: {type: string}}}, additionalProperties: false}}}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '422': {$ref: '#/components/responses/Error'}}
+  /modules/validate-youtube:
+    post:
+      summary: Validate a YouTube video URL and optional metadata
+      x-roles: [admin, trainer]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [url], properties: {url: {type: string, format: uri}, title: {type: string}, durationSeconds: {type: integer}}, additionalProperties: false}}}}
+      responses: {'200': {$ref: '#/components/responses/Success'}, '422': {$ref: '#/components/responses/Error'}}
+  /health:
+    get:
+      summary: Liveness check
+      security: []
+      x-roles: [public]
+      responses: {'200': {$ref: '#/components/responses/Success'}}
+  /health/ready:
+    get:
+      summary: Database readiness check
+      security: []
+      x-roles: [public]
+      responses: {'200': {$ref: '#/components/responses/Success'}, '503': {$ref: '#/components/responses/Error'}}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
+  parameters:
+    id: {in: path, name: id, required: true, schema: {type: string, pattern: '^[a-fA-F0-9]{24}$'}}
+  schemas:
+    RuleCondition:
+      type: object
+      required: [field, operator, value]
+      additionalProperties: false
+      properties:
+        field: {type: string, enum: [domainId, role, designation, level, location, joinedWithinDays, tag]}
+        operator: {type: string, enum: [eq, in, not_in, gte, lte]}
+        value: {}
+    AssignmentRule:
+      type: object
+      required: [name, courseId, conditions]
+      additionalProperties: false
+      properties:
+        name: {type: string, minLength: 1, maxLength: 120}
+        courseId: {type: string, pattern: '^[a-fA-F0-9]{24}$'}
+        isActive: {type: boolean}
+        conditions: {type: array, maxItems: 20, items: {$ref: '#/components/schemas/RuleCondition'}}
+        matchType: {type: string, enum: [all, any], default: all}
+        recurrence: {oneOf: [{type: object, required: [type], properties: {type: {enum: [none]}}, additionalProperties: false}, {type: object, required: [type], properties: {type: {enum: [annual]}}, additionalProperties: false}, {type: object, required: [type, months], properties: {type: {enum: [custom]}, months: {type: integer, minimum: 1, maximum: 120}}, additionalProperties: false}]}
+        dueInDays: {type: integer, minimum: 0, maximum: 3650}
+    AssignmentRulePatch:
+      type: object
+      additionalProperties: false
+      description: Partial update; supplied fields replace the matching rule fields.
+      properties:
+        name: {type: string, minLength: 1, maxLength: 120}
+        courseId: {type: string, pattern: '^[a-fA-F0-9]{24}$'}
+        isActive: {type: boolean}
+        conditions: {type: array, maxItems: 20, items: {$ref: '#/components/schemas/RuleCondition'}}
+        matchType: {type: string, enum: [all, any]}
+        recurrence: {oneOf: [{type: object, required: [type], properties: {type: {enum: [none]}}, additionalProperties: false}, {type: object, required: [type], properties: {type: {enum: [annual]}}, additionalProperties: false}, {type: object, required: [type, months], properties: {type: {enum: [custom]}, months: {type: integer, minimum: 1, maximum: 120}}, additionalProperties: false}]}
+        dueInDays: {type: integer, minimum: 0, maximum: 3650}
+    Envelope:
+      type: object
+      required: [success, data, message, meta]
+      properties:
+        success: {type: boolean}
+        data: {}
+        message: {type: string}
+        meta: {type: object}
+    Error:
+      type: object
+      required: [success, message, code, errors]
+      properties:
+        success: {type: boolean, enum: [false]}
+        message: {type: string}
+        code: {type: string}
+        errors: {type: array, items: {type: object}}
+    Course:
+      type: object
+      required: [title, domainId]
+      additionalProperties: false
+      properties:
+        title: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 5000}
+        domainId: {type: string, pattern: '^[a-fA-F0-9]{24}$'}
+        isMandatory: {type: boolean}
+        validityMonths: {type: integer, minimum: 1, nullable: true}
+        passMark: {type: number, minimum: 0, maximum: 100}
+        maxAttempts: {type: integer, minimum: 1, maximum: 20}
+        eligibility: {type: object}
+    Module:
+      type: object
+      required: [title, type]
+      additionalProperties: false
+      properties:
+        title: {type: string, maxLength: 200}
+        type: {type: string, enum: [youtube, pdf, note, link]}
+        youtubeVideoId: {type: string, pattern: '^[A-Za-z0-9_-]{11}$'}
+        uploadId: {type: string, pattern: '^[a-fA-F0-9]{24}$'}
+        notes: {type: string, maxLength: 10000}
+        sourceUrl: {type: string, format: uri}
+        durationSeconds: {type: integer, minimum: 1, maximum: 86400}
+        completionThreshold: {type: number, minimum: 1, maximum: 100}
+        isRequired: {type: boolean}
+    Question:
+      type: object
+      required: [text, options, marks]
+      properties:
+        text: {type: string, minLength: 1, maxLength: 2000}
+        type: {type: string, enum: [single_choice, multiple_choice, true_false]}
+        options: {type: array, minItems: 2, maxItems: 10, items: {type: object, required: [text, isCorrect], properties: {text: {type: string, maxLength: 500}, isCorrect: {type: boolean}}}}
+        marks: {type: number, exclusiveMinimum: 0, maximum: 1000}
+        explanation: {type: string, maxLength: 2000}
+  requestBodies:
+    Course: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Course'}}}}
+    CoursePatch: {required: true, content: {application/json: {schema: {type: object, minProperties: 1, additionalProperties: false, properties: {title: {type: string, maxLength: 200}, description: {type: string, maxLength: 5000}, domainId: {type: string, pattern: '^[a-fA-F0-9]{24}$'}, isMandatory: {type: boolean}, validityMonths: {type: integer, minimum: 1, nullable: true}, passMark: {type: number, minimum: 0, maximum: 100}, maxAttempts: {type: integer, minimum: 1, maximum: 20}, estimatedMinutes: {type: integer, minimum: 1}, tags: {type: array, maxItems: 30, items: {type: string, maxLength: 50}}, eligibility: {type: object}}}}}}
+    Module: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Module'}}}}
+    ModulePatch: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Module'}}}}
+    Assessment: {required: true, content: {application/json: {schema: {type: object, required: [questions], properties: {questions: {type: array, minItems: 1, maxItems: 50, items: {$ref: '#/components/schemas/Question'}}, timeLimitMinutes: {type: integer, minimum: 1, maximum: 300}}}}}}
+  responses:
+    Success: {description: Successful operation, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    Error: {description: Error response, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
