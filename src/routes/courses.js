@@ -1,47 +1,721 @@
-import {Router} from 'express';
+import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
-import {z} from 'zod';
-import {Assignment,AuditLog,Course,Domain,Notification,Upload,User} from '../models/index.js';
-import {authenticate,allow} from '../middlewares/auth.js';
-import {courseUpload} from '../middlewares/courseUpload.js';
-import {validate} from '../middlewares/validate.js';
-import {asyncHandler} from '../utils/asyncHandler.js';
-import {AppError} from '../utils/AppError.js';
-import {mailer} from '../config/mailer.js';
+import { z } from 'zod';
+import {
+  Assignment,
+  AuditLog,
+  Course,
+  Domain,
+  Notification,
+  Upload,
+  User,
+} from '../models/index.js';
+import { authenticate, allow } from '../middlewares/auth.js';
+import { courseUpload } from '../middlewares/courseUpload.js';
+import { validate } from '../middlewares/validate.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { AppError } from '../utils/AppError.js';
+import { mailer } from '../config/mailer.js';
 import * as service from '../services/courseService.js';
-import {createManualAssignment} from '../services/phase3Service.js';
-import {validateYouTube} from '../services/youtubeMetadataService.js';
-import {localUploadStorage,saveUpload} from '../services/uploadStorage.js';
+import { createManualAssignment } from '../services/phase3Service.js';
+import { validateYouTube } from '../services/youtubeMetadataService.js';
+import { localUploadStorage, saveUpload } from '../services/uploadStorage.js';
+import { courseEligibilityMatches } from '../utils/courseEligibility.js';
 
-const r=Router(),ok=(res,data,message='OK',meta={})=>res.json({success:true,data,message,meta});
-const id=z.string().regex(/^[a-f\d]{24}$/i), params=z.object({id}).strict(), body=s=>validate({body:s}), validateId=validate({params});
-const query=z.object({page:z.coerce.number().int().min(1).default(1),limit:z.coerce.number().int().min(1).max(100).default(20),domain:id.optional(),status:z.enum(['draft','under_review','published','archived','rejected']).optional(),mandatory:z.enum(['true','false']).optional(),search:z.string().max(100).optional(),sort:z.enum(['title','createdAt','updatedAt','publishedAt','version']).default('createdAt'),order:z.enum(['asc','desc']).default('desc')}).strict();
-const courseInput=z.object({title:z.string().min(1).max(200),description:z.string().max(5000).optional(),domainId:id,isMandatory:z.boolean().optional(),validityMonths:z.number().int().positive().nullable().optional(),passMark:z.number().min(0).max(100).optional(),maxAttempts:z.number().int().min(1).max(20).optional(),estimatedMinutes:z.number().int().positive().optional(),tags:z.array(z.string().max(50)).max(30).optional(),eligibility:z.record(z.unknown()).optional()}).strict();
-const patchInput=courseInput.partial();
-const httpsUrl=z.string().url().refine(value=>new URL(value).protocol==='https:',{message:'URL must use HTTPS'});
-const moduleInput=z.object({title:z.string().min(1).max(200),type:z.enum(['youtube','pdf','note','link']),youtubeVideoId:z.string().regex(/^[A-Za-z0-9_-]{11}$/).optional(),durationSeconds:z.number().int().positive().max(86400).optional(),uploadId:id.optional(),notes:z.string().max(10000).optional(),sourceUrl:httpsUrl.optional(),completionThreshold:z.number().min(1).max(100).optional(),isRequired:z.boolean().optional()}).strict().superRefine((v,c)=>{for(const k of ({youtube:['youtubeVideoId'],pdf:['uploadId'],note:['notes'],link:['sourceUrl']}[v.type]||[]))if(!v[k])c.addIssue({code:'custom',path:[k],message:k+' is required'});});
-const modulePatch=z.object({title:z.string().min(1).max(200).optional(),type:z.enum(['youtube','pdf','note','link']).optional(),youtubeVideoId:z.string().regex(/^[A-Za-z0-9_-]{11}$/).optional(),durationSeconds:z.number().int().positive().max(86400).optional(),uploadId:id.optional(),notes:z.string().max(10000).optional(),sourceUrl:httpsUrl.optional(),completionThreshold:z.number().min(1).max(100).optional(),isRequired:z.boolean().optional()}).strict();
-const assessment=z.object({questions:z.array(z.object({text:z.string().min(1).max(2000),type:z.enum(['single_choice','multiple_choice','true_false']).default('single_choice'),options:z.array(z.object({text:z.string().min(1).max(500),isCorrect:z.boolean()}).strict()).min(2).max(10),explanation:z.string().max(2000).optional(),marks:z.number().positive().max(1000)}).strict().refine(q=>q.options.some(o=>o.isCorrect),{message:'At least one correct option required'})).min(1).max(50),timeLimitMinutes:z.number().int().min(1).max(300).optional(),shuffleQuestions:z.boolean().optional(),shuffleOptions:z.boolean().optional()}).strict();
+const r = Router();
 
-r.post('/modules/validate-youtube',authenticate,allow('admin','trainer'),body(z.object({url:z.string().url(),title:z.string().max(200).optional(),durationSeconds:z.number().int().positive().max(86400).optional()}).strict()),asyncHandler(async(req,res)=>ok(res,await validateYouTube(req.body))));
-r.get('/courses',authenticate,allow('admin','trainer','employee'),validate({query}),asyncHandler(async(req,res)=>{const q=req.query,f={};if(req.user.role==='employee'){const [assignedIds,domain]=await Promise.all([Assignment.find({employeeId:req.user._id,status:{$ne:'cancelled'}}).distinct('courseId'),Domain.findOne({isCommon:true,isActive:true}).select('_id').lean()]);const visibleDomains=[req.user.domainId,domain?._id].filter(Boolean);f.$or=[{status:'published',domainId:{$in:visibleDomains}},{_id:{$in:assignedIds},status:'published'}]}else if(req.user.role==='trainer')f.trainerId=req.user._id;else if(req.user.role==='admin')f.status=q.status&&q.status!=='draft'?q.status:{$ne:'draft'};if(req.user.role!=='trainer'&&q.domain)f.domainId=q.domain;if(q.status&&req.user.role==='trainer')f.status=q.status;if(q.mandatory!==undefined)f.isMandatory=q.mandatory==='true';if(q.search)f.title={$regex:String(q.search).replace(/[.*+?^$()|[\]\\]/g,'\\$&'),$options:'i'};const [data,total]=await Promise.all([Course.find(f).populate('domainId','name').populate('trainerId','name email').sort({[q.sort]:q.order==='asc'?1:-1}).skip((q.page-1)*q.limit).limit(q.limit),Course.countDocuments(f)]);ok(res,data,'Courses',{page:q.page,limit:q.limit,total,pages:Math.ceil(total/q.limit)})}));
-r.post('/courses/:id/enroll',authenticate,allow('employee'),validateId,asyncHandler(async(req,res)=>{const course=await Course.findOne({_id:req.params.id,status:'published'});if(!course)throw new AppError(404,'Course not found','NOT_FOUND');const common=await Domain.findOne({isCommon:true,isActive:true}).select('_id').lean();const visible=[req.user.domainId,common?._id].filter(Boolean).some(domainId=>String(domainId)===String(course.domainId));if(!visible)throw new AppError(404,'Course not found','NOT_FOUND');const result=await createManualAssignment({employeeId:req.user._id,courseId:course._id},req.user);const assignment=await Assignment.findById(result.assignment._id).populate({path:'courseId',populate:{path:'domainId',select:'name'}});ok(res,assignment,result.created?'Enrolled in course':'Course already in your learning plan')}));
-r.get('/courses/:id',authenticate,allow('admin','trainer','employee'),validateId,asyncHandler(async(req,res)=>{const c=await Course.findById(req.params.id);if(!c)throw new AppError(404,'Course not found','NOT_FOUND');if(req.user.role==='trainer'&&!(req.user.trainerDomains||[]).some(d=>String(d)===String(c.domainId)))throw new AppError(404,'Course not found','NOT_FOUND');if(req.user.role==='employee'){const [assigned,common]=await Promise.all([Assignment.exists({employeeId:req.user._id,courseId:c._id,status:{$ne:'cancelled'}}),Domain.findOne({isCommon:true,isActive:true}).select('_id').lean()]);const inDomain=[req.user.domainId,common?._id].filter(Boolean).some(domainId=>String(domainId)===String(c.domainId));if(c.status!=='published'||(!assigned&&!inDomain))throw new AppError(404,'Course not found','NOT_FOUND')}ok(res,c)}));
-r.post('/courses',authenticate,allow('trainer'),body(courseInput),asyncHandler(async(req,res)=>{service.assertTrainerDomain(req.user,req.body.domainId);if(!await Domain.exists({_id:req.body.domainId,isActive:true}))throw new AppError(422,'Active domain required','INVALID_DOMAIN');const c=await Course.create({...req.body,trainerId:req.user._id,status:'draft'});await AuditLog.create({actorId:req.user._id,action:'course.create',entityType:'Course',entityId:c._id,after:{title:c.title,status:c.status}});ok(res,c,'Course created')}));
-r.patch('/courses/:id',authenticate,allow('admin','trainer'),validateId,body(patchInput),asyncHandler(async(req,res)=>ok(res,await service.updateCourse(req.params.id,req.body,req.user),'Course updated')));
-r.post('/courses/:id/submit',authenticate,allow('trainer'),validateId,asyncHandler(async(req,res)=>ok(res,await service.transitionCourse(req.params.id,'submit',req.user),'Submitted for review')));
-r.post('/courses/:id/approve',authenticate,allow('admin'),validateId,asyncHandler(async(req,res)=>ok(res,await service.transitionCourse(req.params.id,'approve',req.user),'Course published')));
-r.post('/courses/:id/reject',authenticate,allow('admin'),validateId,body(z.object({notes:z.string().min(1).max(1000)}).strict()),asyncHandler(async(req,res)=>{const course=await service.transitionCourse(req.params.id,'reject',req.user,req.body.notes);const key=`course:rejected:${course._id}:${course.updatedAt.getTime()}`;await Notification.updateOne({reminderKey:key},{$setOnInsert:{reminderKey:key,userId:course.trainerId,title:'Course review returned',message:`${course.title} was returned for revision: ${req.body.notes}`,type:'course_rejected',link:`/courses/${course._id}`}},{upsert:true});const trainer=await User.findById(course.trainerId).select('email');if(trainer)await mailer.send({to:trainer.email,subject:`Course returned: ${course.title}`,text:`${course.title} was returned for revision. Reviewer notes: ${req.body.notes}`});ok(res,course,'Course rejected')}));
-r.post('/courses/:id/archive',authenticate,allow('admin','trainer'),validateId,asyncHandler(async(req,res)=>ok(res,await service.transitionCourse(req.params.id,'archive',req.user),'Course archived')));
-r.post('/courses/:id/new-version',authenticate,allow('trainer'),validateId,asyncHandler(async(req,res)=>ok(res,await service.newVersion(req.params.id,req.user),'Draft version created')));
-r.delete('/courses/:id',authenticate,allow('admin','trainer'),validateId,asyncHandler(async(req,res)=>{await service.deleteCourse(req.params.id,req.user);ok(res,null,'Course and employee assignments deleted')}));
-r.post('/courses/:id/modules',authenticate,allow('admin','trainer'),validateId,body(moduleInput),asyncHandler(async(req,res)=>{if(req.body.type==='pdf'&&!await Upload.exists({_id:req.body.uploadId,uploadedBy:req.user._id,courseId:req.params.id}))throw new AppError(422,'Upload must belong to this course','INVALID_UPLOAD');ok(res,await service.addModule(req.params.id,req.body,req.user),'Module created')}));
-r.patch('/courses/:id/modules/reorder',authenticate,allow('admin','trainer'),validateId,body(z.object({order:z.array(id).max(100)}).strict()),asyncHandler(async(req,res)=>ok(res,await service.reorderModules(req.params.id,req.body.order,req.user),'Modules reordered')));
-r.patch('/courses/:id/modules/:moduleId',authenticate,allow('admin','trainer'),validate({params:z.object({id,moduleId:id}).strict()}),body(modulePatch),asyncHandler(async(req,res)=>ok(res,await service.patchModule(req.params.id,req.params.moduleId,req.body,req.user),'Module updated')));
-r.delete('/courses/:id/modules/:moduleId',authenticate,allow('admin','trainer'),validate({params:z.object({id,moduleId:id}).strict()}),asyncHandler(async(req,res)=>ok(res,await service.removeModule(req.params.id,req.params.moduleId,req.user),'Module deleted')));
-r.put('/courses/:id/assessment',authenticate,allow('admin','trainer'),validateId,body(assessment),asyncHandler(async(req,res)=>ok(res,await service.putAssessment(req.params.id,req.body,req.user),'Assessment saved')));
-r.get('/courses/:id/assessment',authenticate,allow('admin','trainer'),validateId,asyncHandler(async(req,res)=>ok(res,await service.getAssessment(req.params.id,req.user))));
-const uploadLimit=rateLimit({windowMs:3600000,limit:20,standardHeaders:true,legacyHeaders:false,keyGenerator:req=>String(req.user._id)});
-r.post('/courses/:id/uploads',authenticate,allow('admin','trainer'),uploadLimit,validateId,asyncHandler(async(req,_res,next)=>{req.course=await service.findCourse(req.params.id,req.user,{write:true});next()}),courseUpload.single('file'),asyncHandler(async(req,res)=>{const file=await saveUpload(req.file,req.user,req.course._id);ok(res,{id:file.id,originalName:file.originalName,mimeType:file.mimeType,size:file.size},'Upload stored')}));
-r.get('/uploads/:id',authenticate,allow('admin','trainer','employee'),validate({params:z.object({id}).strict()}),asyncHandler(async(req,res)=>{const upload=await Upload.findById(req.params.id);if(!upload)throw new AppError(404,'Upload not found','NOT_FOUND');const c=await Course.findOne({'modules.uploadId':upload.id});if(!c)throw new AppError(404,'Upload not found','NOT_FOUND');if(req.user.role==='trainer'&&!(req.user.trainerDomains||[]).some(d=>String(d)===String(c.domainId)))throw new AppError(404,'Upload not found','NOT_FOUND');if(req.user.role==='employee'&&(c.status!=='published'||!await Assignment.exists({employeeId:req.user._id,courseId:c._id,status:{$ne:'cancelled'}})))throw new AppError(404,'Upload not found','NOT_FOUND');const bytes=await localUploadStorage.get(upload.storageName);res.type(upload.mimeType).set('Content-Disposition','inline; filename="'+upload.originalName.replace(/["\\]/g,'_')+'"').send(bytes)}));
+const ok = (res, data, message = 'OK', meta = {}) =>
+  res.json({ success: true, data, message, meta });
+
+// ---------------------------------------------------------------------------
+// Validation schemas
+// ---------------------------------------------------------------------------
+
+const id = z.string().regex(/^[a-f\d]{24}$/i);
+const params = z.object({ id }).strict();
+const moduleParams = z.object({ id, moduleId: id }).strict();
+const body = (schema) => validate({ body: schema });
+const validateId = validate({ params });
+
+const query = z
+  .object({
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    domain: id.optional(),
+    status: z
+      .enum(['draft', 'under_review', 'published', 'archived', 'rejected'])
+      .optional(),
+    mandatory: z.enum(['true', 'false']).optional(),
+    search: z.string().max(100).optional(),
+    sort: z
+      .enum(['title', 'createdAt', 'updatedAt', 'publishedAt', 'version'])
+      .default('createdAt'),
+    order: z.enum(['asc', 'desc']).default('desc'),
+  })
+  .strict();
+
+const courseInput = z
+  .object({
+    title: z.string().min(1).max(200),
+    description: z.string().max(5000).optional(),
+    domainId: id,
+    isMandatory: z.boolean().optional(),
+    validityMonths: z.number().int().positive().nullable().optional(),
+    passMark: z.number().min(0).max(100).optional(),
+    maxAttempts: z.number().int().min(1).max(20).optional(),
+    estimatedMinutes: z.number().int().positive().optional(),
+    tags: z.array(z.string().max(50)).max(30).optional(),
+    eligibility: z.record(z.unknown()).optional(),
+  })
+  .strict();
+
+const patchInput = courseInput.partial();
+
+const httpsUrl = z
+  .string()
+  .url()
+  .refine((value) => new URL(value).protocol === 'https:', {
+    message: 'URL must use HTTPS',
+  });
+
+const moduleInput = z
+  .object({
+    title: z.string().min(1).max(200),
+    type: z.enum(['youtube', 'pdf', 'note', 'link']),
+    youtubeVideoId: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{11}$/)
+      .optional(),
+    durationSeconds: z.number().int().positive().max(86400).optional(),
+    uploadId: id.optional(),
+    notes: z.string().max(10000).optional(),
+    sourceUrl: httpsUrl.optional(),
+    completionThreshold: z.number().min(1).max(100).optional(),
+    isRequired: z.boolean().optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    // Each module type needs its own content field
+    const requiredByType = {
+      youtube: ['youtubeVideoId'],
+      pdf: ['uploadId'],
+      note: ['notes'],
+      link: ['sourceUrl'],
+    };
+
+    for (const key of requiredByType[value.type] || []) {
+      if (!value[key]) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [key],
+          message: key + ' is required',
+        });
+      }
+    }
+  });
+
+const modulePatch = z
+  .object({
+    title: z.string().min(1).max(200).optional(),
+    type: z.enum(['youtube', 'pdf', 'note', 'link']).optional(),
+    youtubeVideoId: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{11}$/)
+      .optional(),
+    durationSeconds: z.number().int().positive().max(86400).optional(),
+    uploadId: id.optional(),
+    notes: z.string().max(10000).optional(),
+    sourceUrl: httpsUrl.optional(),
+    completionThreshold: z.number().min(1).max(100).optional(),
+    isRequired: z.boolean().optional(),
+  })
+  .strict();
+
+const assessment = z
+  .object({
+    questions: z
+      .array(
+        z
+          .object({
+            text: z.string().min(1).max(2000),
+            type: z
+              .enum(['single_choice', 'multiple_choice', 'true_false'])
+              .default('single_choice'),
+            options: z
+              .array(
+                z
+                  .object({
+                    text: z.string().min(1).max(500),
+                    isCorrect: z.boolean(),
+                  })
+                  .strict()
+              )
+              .min(2)
+              .max(10),
+            explanation: z.string().max(2000).optional(),
+            marks: z.number().positive().max(1000),
+          })
+          .strict()
+          .refine((q) => q.options.some((o) => o.isCorrect), {
+            message: 'At least one correct option required',
+          })
+      )
+      .min(1)
+      .max(50),
+    timeLimitMinutes: z.number().int().min(1).max(300).optional(),
+    shuffleQuestions: z.boolean().optional(),
+    shuffleOptions: z.boolean().optional(),
+  })
+  .strict();
+
+// ---------------------------------------------------------------------------
+// YouTube validation
+// ---------------------------------------------------------------------------
+
+r.post(
+  '/modules/validate-youtube',
+  authenticate,
+  allow('admin', 'trainer'),
+  body(
+    z
+      .object({
+        url: z.string().url(),
+        title: z.string().max(200).optional(),
+        durationSeconds: z.number().int().positive().max(86400).optional(),
+      })
+      .strict()
+  ),
+  asyncHandler(async (req, res) => ok(res, await validateYouTube(req.body)))
+);
+
+// ---------------------------------------------------------------------------
+// Courses: list, enroll, read
+// ---------------------------------------------------------------------------
+
+r.get(
+  '/courses',
+  authenticate,
+  allow('admin', 'trainer', 'employee'),
+  validate({ query }),
+  asyncHandler(async (req, res) => {
+    const q = req.query;
+    const f = {};
+
+    if (req.user.role === 'employee') {
+      const [assignedIds, domain] = await Promise.all([
+        Assignment.find({
+          employeeId: req.user._id,
+          status: { $ne: 'cancelled' },
+        }).distinct('courseId'),
+        Domain.findOne({ isCommon: true, isActive: true })
+          .select('_id')
+          .lean(),
+      ]);
+
+      const visibleDomains = [req.user.domainId, domain?._id].filter(Boolean);
+
+      f.$or = [
+        { status: 'published', domainId: { $in: visibleDomains } },
+        { _id: { $in: assignedIds }, status: 'published' },
+      ];
+    } else if (req.user.role === 'trainer') {
+      f.trainerId = req.user._id;
+    } else if (req.user.role === 'admin') {
+      f.status =
+        q.status && q.status !== 'draft' ? q.status : { $ne: 'draft' };
+    }
+
+    if (req.user.role !== 'trainer' && q.domain) f.domainId = q.domain;
+    if (q.status && req.user.role === 'trainer') f.status = q.status;
+    if (q.mandatory !== undefined) f.isMandatory = q.mandatory === 'true';
+
+    if (q.search) {
+      f.title = {
+        $regex: String(q.search).replace(/[.*+?^$()|[\]\\]/g, '\\$&'),
+        $options: 'i',
+      };
+    }
+
+    const courseQuery = Course.find(f)
+      .populate('domainId', 'name')
+      .populate('trainerId', 'name email')
+      .sort({ [q.sort]: q.order === 'asc' ? 1 : -1 });
+    let data;
+    let total;
+
+    if (req.user.role === 'employee') {
+      const eligibleCourses = (await courseQuery).filter((course) =>
+        courseEligibilityMatches(req.user, course.eligibility)
+      );
+      total = eligibleCourses.length;
+      data = eligibleCourses.slice((q.page - 1) * q.limit, q.page * q.limit);
+    } else {
+      [data, total] = await Promise.all([
+        courseQuery.skip((q.page - 1) * q.limit).limit(q.limit),
+        Course.countDocuments(f),
+      ]);
+    }
+
+    ok(res, data, 'Courses', {
+      page: q.page,
+      limit: q.limit,
+      total,
+      pages: Math.ceil(total / q.limit),
+    });
+  })
+);
+
+r.post(
+  '/courses/:id/enroll',
+  authenticate,
+  allow('employee'),
+  validateId,
+  asyncHandler(async (req, res) => {
+    const course = await Course.findOne({
+      _id: req.params.id,
+      status: 'published',
+    });
+    if (!course) throw new AppError(404, 'Course not found', 'NOT_FOUND');
+
+    const common = await Domain.findOne({ isCommon: true, isActive: true })
+      .select('_id')
+      .lean();
+
+    const visible = [req.user.domainId, common?._id]
+      .filter(Boolean)
+      .some((domainId) => String(domainId) === String(course.domainId));
+    if (!visible || !courseEligibilityMatches(req.user, course.eligibility)) {
+      throw new AppError(404, 'Course not found', 'NOT_FOUND');
+    }
+
+    const result = await createManualAssignment(
+      { employeeId: req.user._id, courseId: course._id },
+      req.user
+    );
+
+    const assignment = await Assignment.findById(
+      result.assignment._id
+    ).populate({
+      path: 'courseId',
+      populate: { path: 'domainId', select: 'name' },
+    });
+
+    ok(
+      res,
+      assignment,
+      result.created
+        ? 'Enrolled in course'
+        : 'Course already in your learning plan'
+    );
+  })
+);
+
+r.get(
+  '/courses/:id',
+  authenticate,
+  allow('admin', 'trainer', 'employee'),
+  validateId,
+  asyncHandler(async (req, res) => {
+    const c = await Course.findById(req.params.id);
+    if (!c) throw new AppError(404, 'Course not found', 'NOT_FOUND');
+
+    if (
+      req.user.role === 'trainer' &&
+      !(req.user.trainerDomains || []).some(
+        (d) => String(d) === String(c.domainId)
+      )
+    ) {
+      throw new AppError(404, 'Course not found', 'NOT_FOUND');
+    }
+
+    if (req.user.role === 'employee') {
+      const [assigned, common] = await Promise.all([
+        Assignment.exists({
+          employeeId: req.user._id,
+          courseId: c._id,
+          status: { $ne: 'cancelled' },
+        }),
+        Domain.findOne({ isCommon: true, isActive: true })
+          .select('_id')
+          .lean(),
+      ]);
+
+      const inDomain = [req.user.domainId, common?._id]
+        .filter(Boolean)
+        .some((domainId) => String(domainId) === String(c.domainId));
+
+      if (
+        c.status !== 'published' ||
+        (!assigned && !inDomain) ||
+        !courseEligibilityMatches(req.user, c.eligibility)
+      ) {
+        throw new AppError(404, 'Course not found', 'NOT_FOUND');
+      }
+    }
+
+    ok(res, c);
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Courses: create, update, review workflow
+// ---------------------------------------------------------------------------
+
+r.post(
+  '/courses',
+  authenticate,
+  allow('trainer'),
+  body(courseInput),
+  asyncHandler(async (req, res) => {
+    service.assertTrainerDomain(req.user, req.body.domainId);
+
+    if (!(await Domain.exists({ _id: req.body.domainId, isActive: true }))) {
+      throw new AppError(422, 'Active domain required', 'INVALID_DOMAIN');
+    }
+
+    const c = await Course.create({
+      ...req.body,
+      trainerId: req.user._id,
+      status: 'draft',
+    });
+
+    await AuditLog.create({
+      actorId: req.user._id,
+      action: 'course.create',
+      entityType: 'Course',
+      entityId: c._id,
+      after: { title: c.title, status: c.status },
+    });
+
+    ok(res, c, 'Course created');
+  })
+);
+
+r.patch(
+  '/courses/:id',
+  authenticate,
+  allow('admin', 'trainer'),
+  validateId,
+  body(patchInput),
+  asyncHandler(async (req, res) =>
+    ok(
+      res,
+      await service.updateCourse(req.params.id, req.body, req.user),
+      'Course updated'
+    )
+  )
+);
+
+r.post(
+  '/courses/:id/submit',
+  authenticate,
+  allow('trainer'),
+  validateId,
+  asyncHandler(async (req, res) =>
+    ok(
+      res,
+      await service.transitionCourse(req.params.id, 'submit', req.user),
+      'Submitted for review'
+    )
+  )
+);
+
+r.post(
+  '/courses/:id/approve',
+  authenticate,
+  allow('admin'),
+  validateId,
+  asyncHandler(async (req, res) =>
+    ok(
+      res,
+      await service.transitionCourse(req.params.id, 'approve', req.user),
+      'Course published'
+    )
+  )
+);
+
+r.post(
+  '/courses/:id/reject',
+  authenticate,
+  allow('admin'),
+  validateId,
+  body(z.object({ notes: z.string().min(1).max(1000) }).strict()),
+  asyncHandler(async (req, res) => {
+    const course = await service.transitionCourse(
+      req.params.id,
+      'reject',
+      req.user,
+      req.body.notes
+    );
+
+    // In-app notification (deduplicated per rejection)
+    const key = `course:rejected:${course._id}:${course.updatedAt.getTime()}`;
+    await Notification.updateOne(
+      { reminderKey: key },
+      {
+        $setOnInsert: {
+          reminderKey: key,
+          userId: course.trainerId,
+          title: 'Course review returned',
+          message: `${course.title} was returned for revision: ${req.body.notes}`,
+          type: 'course_rejected',
+          link: `/courses/${course._id}`,
+        },
+      },
+      { upsert: true }
+    );
+
+    // Email the trainer
+    const trainer = await User.findById(course.trainerId).select('email');
+    if (trainer) {
+      await mailer.send({
+        to: trainer.email,
+        subject: `Course returned: ${course.title}`,
+        text: `${course.title} was returned for revision. Reviewer notes: ${req.body.notes}`,
+      });
+    }
+
+    ok(res, course, 'Course rejected');
+  })
+);
+
+r.post(
+  '/courses/:id/archive',
+  authenticate,
+  allow('admin', 'trainer'),
+  validateId,
+  asyncHandler(async (req, res) =>
+    ok(
+      res,
+      await service.transitionCourse(req.params.id, 'archive', req.user),
+      'Course archived'
+    )
+  )
+);
+
+r.post(
+  '/courses/:id/new-version',
+  authenticate,
+  allow('trainer'),
+  validateId,
+  asyncHandler(async (req, res) =>
+    ok(
+      res,
+      await service.newVersion(req.params.id, req.user),
+      'Draft version created'
+    )
+  )
+);
+
+r.delete(
+  '/courses/:id',
+  authenticate,
+  allow('admin', 'trainer'),
+  validateId,
+  asyncHandler(async (req, res) => {
+    await service.deleteCourse(req.params.id, req.user);
+    ok(res, null, 'Course and employee assignments deleted');
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Modules
+// ---------------------------------------------------------------------------
+
+r.post(
+  '/courses/:id/modules',
+  authenticate,
+  allow('admin', 'trainer'),
+  validateId,
+  body(moduleInput),
+  asyncHandler(async (req, res) => {
+    if (
+      req.body.type === 'pdf' &&
+      !(await Upload.exists({
+        _id: req.body.uploadId,
+        uploadedBy: req.user._id,
+        courseId: req.params.id,
+      }))
+    ) {
+      throw new AppError(
+        422,
+        'Upload must belong to this course',
+        'INVALID_UPLOAD'
+      );
+    }
+
+    ok(
+      res,
+      await service.addModule(req.params.id, req.body, req.user),
+      'Module created'
+    );
+  })
+);
+
+r.patch(
+  '/courses/:id/modules/reorder',
+  authenticate,
+  allow('admin', 'trainer'),
+  validateId,
+  body(z.object({ order: z.array(id).max(100) }).strict()),
+  asyncHandler(async (req, res) =>
+    ok(
+      res,
+      await service.reorderModules(req.params.id, req.body.order, req.user),
+      'Modules reordered'
+    )
+  )
+);
+
+r.patch(
+  '/courses/:id/modules/:moduleId',
+  authenticate,
+  allow('admin', 'trainer'),
+  validate({ params: moduleParams }),
+  body(modulePatch),
+  asyncHandler(async (req, res) =>
+    ok(
+      res,
+      await service.patchModule(
+        req.params.id,
+        req.params.moduleId,
+        req.body,
+        req.user
+      ),
+      'Module updated'
+    )
+  )
+);
+
+r.delete(
+  '/courses/:id/modules/:moduleId',
+  authenticate,
+  allow('admin', 'trainer'),
+  validate({ params: moduleParams }),
+  asyncHandler(async (req, res) =>
+    ok(
+      res,
+      await service.removeModule(req.params.id, req.params.moduleId, req.user),
+      'Module deleted'
+    )
+  )
+);
+
+// ---------------------------------------------------------------------------
+// Assessment
+// ---------------------------------------------------------------------------
+
+r.put(
+  '/courses/:id/assessment',
+  authenticate,
+  allow('admin', 'trainer'),
+  validateId,
+  body(assessment),
+  asyncHandler(async (req, res) =>
+    ok(
+      res,
+      await service.putAssessment(req.params.id, req.body, req.user),
+      'Assessment saved'
+    )
+  )
+);
+
+r.get(
+  '/courses/:id/assessment',
+  authenticate,
+  allow('admin', 'trainer'),
+  validateId,
+  asyncHandler(async (req, res) =>
+    ok(res, await service.getAssessment(req.params.id, req.user))
+  )
+);
+
+// ---------------------------------------------------------------------------
+// Uploads
+// ---------------------------------------------------------------------------
+
+const uploadLimit = rateLimit({
+  windowMs: 3600000, // 1 hour
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user._id),
+});
+
+r.post(
+  '/courses/:id/uploads',
+  authenticate,
+  allow('admin', 'trainer'),
+  uploadLimit,
+  validateId,
+  // Confirm write access to the course before accepting the file
+  asyncHandler(async (req, _res, next) => {
+    req.course = await service.findCourse(req.params.id, req.user, {
+      write: true,
+    });
+    next();
+  }),
+  courseUpload.single('file'),
+  asyncHandler(async (req, res) => {
+    const file = await saveUpload(req.file, req.user, req.course._id);
+
+    ok(
+      res,
+      {
+        id: file.id,
+        originalName: file.originalName,
+        mimeType: file.mimeType,
+        size: file.size,
+      },
+      'Upload stored'
+    );
+  })
+);
+
+r.get(
+  '/uploads/:id',
+  authenticate,
+  allow('admin', 'trainer', 'employee'),
+  validate({ params }),
+  asyncHandler(async (req, res) => {
+    const upload = await Upload.findById(req.params.id);
+    if (!upload) throw new AppError(404, 'Upload not found', 'NOT_FOUND');
+
+    // An upload is only reachable through a course module that references it
+    const c = await Course.findOne({ 'modules.uploadId': upload.id });
+    if (!c) throw new AppError(404, 'Upload not found', 'NOT_FOUND');
+
+    if (
+      req.user.role === 'trainer' &&
+      !(req.user.trainerDomains || []).some(
+        (d) => String(d) === String(c.domainId)
+      )
+    ) {
+      throw new AppError(404, 'Upload not found', 'NOT_FOUND');
+    }
+
+    if (
+      req.user.role === 'employee' &&
+      (c.status !== 'published' ||
+        !(await Assignment.exists({
+          employeeId: req.user._id,
+          courseId: c._id,
+          status: { $ne: 'cancelled' },
+        })))
+    ) {
+      throw new AppError(404, 'Upload not found', 'NOT_FOUND');
+    }
+
+    const bytes = await localUploadStorage.get(upload.storageName);
+
+    res
+      .type(upload.mimeType)
+      .set(
+        'Content-Disposition',
+        'inline; filename="' + upload.originalName.replace(/["\\]/g, '_') + '"'
+      )
+      .send(bytes);
+  })
+);
+
 export default r;

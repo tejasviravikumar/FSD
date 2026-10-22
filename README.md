@@ -85,3 +85,5 @@ Admins can run handlers immediately with `POST /api/v1/admin/jobs/nightly/run`, 
 All API routes are listed in [docs/openapi.yaml](docs/openapi.yaml); access classes are listed in [docs/RBAC_MATRIX.md](docs/RBAC_MATRIX.md). JSON responses use `{ success, data, message, meta }`; report endpoints accept `?format=csv` and neutralize spreadsheet formula prefixes. RBAC denies access by default, scopes managers to active direct reportees and trainers to their own courses, and uses Zod input validation, ObjectId checks, whitelisted writes and audit records for sensitive actions.
 
 See [docs/SECURITY.md](docs/SECURITY.md) for controls and operational limitations.
+
+To add or refresh randomized compliance demo data without clearing the database, run `npm run seed:compliance` after the demo users and domains exist.

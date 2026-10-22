@@ -1,35 +1,688 @@
-﻿import {Router} from 'express';import bcrypt from 'bcryptjs';import {z} from 'zod';import {User,Domain,Course,Assignment,Notification,AuditLog,AssignmentRule} from '../models/index.js';import {authenticate,allow} from '../middlewares/auth.js';import {csrfProtection} from '../middlewares/csrf.js';import {csvUpload} from '../middlewares/csvUpload.js';import {validate} from '../middlewares/validate.js';import {asyncHandler} from '../utils/asyncHandler.js';import {AppError} from '../utils/AppError.js';import * as auth from '../services/authService.js';import * as resources from '../services/resourceService.js';import {importUsersCsv} from '../services/csvImportService.js';import {env} from '../config/env.js';import courseRoutes from './courses.js';import phase3Routes from './phase3.js';import phase3LearningRoutes from './phase3Learning.js';import operationsRoutes from './operations.js';import {evaluateRulesForEmployee} from '../services/phase3Service.js';
-import {complianceFor} from '../services/phase3LearningService.js';
-const r=Router(), ok=(res,data,message='OK',meta={})=>res.json({success:true,data,message,meta});r.use(courseRoutes);r.use(phase3Routes);r.use(phase3LearningRoutes);r.use(operationsRoutes);const idSchema=z.object({id:z.string().regex(/^[a-f\d]{24}$/i)}).strict();const body=s=>validate({body:s});const listQ=z.object({page:z.coerce.number().int().min(1).default(1),limit:z.coerce.number().int().min(1).max(100).default(20),search:z.string().max(100).optional(),domainId:z.string().regex(/^[a-f\d]{24}$/i).optional(),role:z.enum(['admin','trainer','employee']).optional(),status:z.string().max(30).optional(),level:z.string().max(30).optional(),location:z.string().max(100).optional()}).strict();
-const cookieOptions={httpOnly:true,secure:env.COOKIE_SECURE==='true',sameSite:'strict',path:'/api/v1/auth',maxAge:7*864e5};
-r.post('/auth/login',body(z.object({email:z.string().email().max(254),password:z.string().min(1).max(128)}).strict()),asyncHandler(async(req,res)=>{const out=await auth.login(req.body.email,req.body.password,{ip:req.ip,userAgent:req.get('user-agent')});res.cookie('refreshToken',out.refreshToken,cookieOptions);ok(res,{user:out.user,accessToken:out.accessToken},'Signed in')}));
-r.post('/auth/refresh',csrfProtection,asyncHandler(async(req,res)=>{let out;try{out=await auth.rotate(req.cookies?.refreshToken,{ip:req.ip,userAgent:req.get('user-agent')})}catch(error){if(error?.statusCode===401)res.clearCookie('refreshToken',{...cookieOptions,maxAge:undefined});throw error}res.cookie('refreshToken',out.refreshToken,cookieOptions);ok(res,{user:out.user,accessToken:out.accessToken},'Token refreshed')}));
-r.post('/auth/logout',authenticate,allow('admin','trainer','employee'),csrfProtection,asyncHandler(async(req,res)=>{await auth.revoke(req.cookies?.refreshToken,req.user._id);res.clearCookie('refreshToken',{...cookieOptions,maxAge:undefined});ok(res,null,'Signed out')}));r.post('/auth/logout-all',authenticate,allow('admin','trainer','employee'),asyncHandler(async(req,res)=>{await auth.revokeAll(req.user._id);ok(res,null,'All sessions revoked')}));
-r.get('/auth/me',authenticate,allow('admin','trainer','employee'),(req,res)=>ok(res,{...req.user.toJSON(),isManager:req.isManager}));r.post('/auth/change-password',authenticate,allow('admin','trainer','employee'),body(z.object({currentPassword:z.string(),newPassword:z.string().min(10).max(128)}).strict()),asyncHandler(async(req,res)=>{auth.passwordPolicy(req.body.newPassword,req.user);await auth.passwordChange(req.user._id,req.body.currentPassword,req.body.newPassword);ok(res,null,'Password changed')}));r.post('/auth/forgot-password',body(z.object({email:z.string().email()}).strict()),asyncHandler(async(req,res)=>{await auth.forgotPassword(req.body.email);ok(res,null,'If the account exists, reset instructions will be sent')}));r.post('/auth/reset-password',body(z.object({token:z.string(),password:z.string().min(10).max(128)}).strict()),asyncHandler(async(req,res)=>{await auth.resetPassword(req.body.token,req.body.password);ok(res,null,'Password reset')}));
-r.get('/users',authenticate,allow('admin','manager'),validate({query:listQ}),asyncHandler(async(req,res)=>{const v=await resources.listUsers(req.query,req.user);ok(res,v.data,'Users',v.meta)}));r.post('/users',authenticate,allow('admin'),body(z.object({name:z.string().min(1).max(120),email:z.string().email(),phone:z.string().max(32).optional(),password:z.string().min(10).max(128),role:z.enum(['admin','trainer','employee']).optional(),domainId:z.string().regex(/^[a-f\d]{24}$/i).optional(),trainerDomains:z.array(z.string().regex(/^[a-f\d]{24}$/i)).optional(),designation:z.string().max(120).optional(),level:z.string().optional(),location:z.string().max(100).optional(),tags:z.array(z.string().max(50)).max(100).optional(),managerId:z.string().regex(/^[a-f\d]{24}$/i).optional()}).strict()),asyncHandler(async(req,res)=>{const p=auth.passwordPolicy(req.body.password,{name:req.body.name,email:req.body.email});void p;const input={...req.body,passwordHash:await bcrypt.hash(req.body.password,12)};delete input.password;ok(res,await resources.createUser(input,req.user),'User created')}));r.get('/users/:id',authenticate,allow('admin','manager','employee'),validate({params:idSchema}),asyncHandler(async(req,res)=>ok(res,await resources.getUser(req.params.id,req.user))));r.patch('/users/:id',authenticate,allow('admin','employee'),validate({params:idSchema}),body(z.object({name:z.string().max(120).optional(),phone:z.string().max(32).optional(),designation:z.string().max(120).optional(),level:z.enum(['new_joiner','junior','mid','senior','team_lead','manager']).optional(),location:z.string().max(100).optional(),role:z.enum(['admin','trainer','employee']).optional(),domainId:z.string().regex(/^[a-f\d]{24}$/i).optional(),managerId:z.string().regex(/^[a-f\d]{24}$/i).optional(),trainerDomains:z.array(z.string().regex(/^[a-f\d]{24}$/i)).optional(),tags:z.array(z.string().max(50)).max(100).optional()}).strip()),asyncHandler(async(req,res)=>{const previous=await User.findById(req.params.id).select('role');const user=await resources.updateUser(req.params.id,req.body,req.user);if(previous?.role==='employee'&&user.role!=='employee')await Assignment.updateMany({employeeId:user._id,source:'rule',status:'not_started'},{$set:{status:'cancelled'}});if(user.role==='employee')await evaluateRulesForEmployee(user);ok(res,user,'User updated')}));
-r.patch('/users/:id/status',authenticate,allow('admin'),validate({params:idSchema}),body(z.object({status:z.enum(['active','inactive'])}).strict()),asyncHandler(async(req,res)=>ok(res,await resources.changeUserStatus(req.params.id,req.body.status,req.user))));r.delete('/users/:id',authenticate,allow('admin'),validate({params:idSchema}),asyncHandler(async(req,res)=>{await resources.deactivateUser(req.params.id,req.user);ok(res,null,'User deactivated')}));
-r.get('/domains',authenticate,allow('admin','trainer','employee'),asyncHandler(async(_req,res)=>ok(res,await Domain.find({isActive:true}))));r.get('/domains/:id',authenticate,allow('admin','trainer','employee'),validate({params:idSchema}),asyncHandler(async(req,res)=>{const d=await Domain.findById(req.params.id);if(!d)throw new AppError(404,'Domain not found');ok(res,d)}));r.post('/domains',authenticate,allow('admin'),body(z.object({name:z.string().min(1).max(100),description:z.string().max(500).optional(),isCommon:z.boolean().optional()}).strict()),asyncHandler(async(req,res)=>ok(res,await resources.createDomain(req.body,req.user),'Domain created')));r.patch('/domains/:id',authenticate,allow('admin'),validate({params:idSchema}),body(z.object({name:z.string().max(100).optional(),description:z.string().max(500).optional(),isActive:z.boolean().optional()}).strict()),asyncHandler(async(req,res)=>ok(res,await resources.updateDomain(req.params.id,req.body,req.user))));r.delete('/domains/:id',authenticate,allow('admin'),validate({params:idSchema}),asyncHandler(async(req,res)=>{const [u,c]=await Promise.all([User.exists({domainId:req.params.id,status:'active'}),Course.exists({domainId:req.params.id,status:{$ne:'archived'}})]);if(u||c)throw new AppError(409,'Domain has active users or courses','CONFLICT');await resources.deactivateDomain(req.params.id,req.user);ok(res,null,'Domain deactivated')}));
-const mounts={assignments:['admin','manager'],certificates:['admin','manager'],rules:['admin','trainer']};for(const [path,roles] of Object.entries(mounts)){r.get(`/${path}`,authenticate,allow(...roles),validate({query:listQ}),asyncHandler(async(req,res)=>{const v=await resources.genericList(path,{query:req.query,actor:req.user});ok(res,v.data,path,v.meta)}))}
-r.post('/assignments',authenticate,allow('admin','manager'),body(z.object({employeeId:z.string().regex(/^[a-f\d]{24}$/i),courseId:z.string().regex(/^[a-f\d]{24}$/i),dueDate:z.string().datetime({offset:true}).optional()}).strict()),asyncHandler(async(req,res)=>ok(res,await resources.createManualAssignment(req.body,req.user),'Assignment created')));r.get('/assignments/me',authenticate,allow('employee'),asyncHandler(async(req,res)=>ok(res,await Assignment.find({employeeId:req.user._id}).populate({path:'courseId',select:'title courseCode description domainId modules',populate:{path:'domainId',select:'name'}}).sort({dueDate:1}))));r.get('/assignments/:id',authenticate,allow('admin','manager','employee'),validate({params:idSchema}),asyncHandler(async(req,res)=>{const f={_id:req.params.id};if(req.user.role==='employee')f.employeeId=req.user._id;if(req.user.role==='manager'){const ids=await User.find({managerId:req.user._id}).distinct('_id');f.employeeId={$in:ids}}const a=await Assignment.findOne(f).populate('courseId');if(!a)throw new AppError(404,'Assignment not found');ok(res,a)}));
-r.post('/rules',authenticate,allow('admin'),body(z.object({name:z.string(),courseId:z.string().regex(/^[a-f\d]{24}$/i),isActive:z.boolean().optional(),conditions:z.array(z.record(z.any())).optional(),matchType:z.enum(['all','any']).optional(),recurrence:z.string().optional(),dueInDays:z.number().optional()}).strict()),asyncHandler(async(req,res)=>ok(res,await AssignmentRule.create(req.body),'Rule created')));r.get('/health',(_req,res)=>ok(res,{status:'ok'}));r.get('/health/ready',asyncHandler(async(_req,res)=>{const mongoose=await import('mongoose');if(mongoose.default.connection.readyState!==1)throw new AppError(503,'Database unavailable','NOT_READY');ok(res,{status:'ready'})}));
-r.post('/users/import',authenticate,allow('admin'),csvUpload.single('file'),(req,_res,next)=>{req.body=req.body||{};if(req.file){if(req.file.buffer.includes(0))return next(new AppError(400,'Invalid CSV file','CSV_INVALID'));req.body.csv=req.file.buffer.toString('utf8')}next()},body(z.object({csv:z.string().max(2*1024*1024).optional()}).strict()),asyncHandler(async(req,res)=>{const result=await importUsersCsv(req.body.csv,req.user);ok(res,{created:result.created,errors:result.errors},'Import processed',{received:result.received,created:result.created,failed:result.errors.length})}))
-r.get('/users/:id/compliance',authenticate,allow('admin','manager','employee'),validate({params:idSchema}),asyncHandler(async(req,res)=>{const user=await resources.getUser(req.params.id,req.user);ok(res,await complianceFor(user),'Compliance summary')}));
-r.get('/domains/:id/stats',authenticate,allow('admin','trainer'),validate({params:idSchema}),asyncHandler(async(req,res)=>{const d=await Domain.findById(req.params.id);if(!d||req.user.role==='trainer'&&!req.user.trainerDomains.some(x=>String(x)===String(d._id)))throw new AppError(404,'Domain not found');const [users,courses,assignments]=await Promise.all([User.countDocuments({domainId:d._id,status:'active',deletedAt:null}),Course.countDocuments({domainId:d._id}),Assignment.countDocuments({courseId:{$in:await Course.find({domainId:d._id}).distinct('_id')}})]);ok(res,{domainId:d._id,activeUsers:users,courses,assignments})}));
-r.put('/domains/:id/trainers',authenticate,allow('admin'),validate({params:idSchema}),body(z.object({trainerIds:z.array(z.string().regex(/^[a-f\d]{24}$/i)).max(100)}).strict()),asyncHandler(async(req,res)=>{const domain=await Domain.findById(req.params.id);if(!domain)throw new AppError(404,'Domain not found');const trainers=await User.find({_id:{$in:req.body.trainerIds},role:'trainer',deletedAt:null});if(trainers.length!==new Set(req.body.trainerIds).size)throw new AppError(422,'All trainerIds must identify active trainers');const before=await User.find({trainerDomains:domain._id}).distinct('_id');await User.updateMany({trainerDomains:domain._id},{$pull:{trainerDomains:domain._id}});await User.updateMany({_id:{$in:trainers.map(t=>t._id)}},{$addToSet:{trainerDomains:domain._id}});await AuditLog.create({actorId:req.user._id,action:'domain.trainers.update',entityType:'Domain',entityId:domain._id,before:{trainerIds:before},after:{trainerIds:trainers.map(t=>t._id)}});ok(res,{domainId:domain._id,trainerIds:trainers.map(t=>t._id)})}));
+﻿import { Router } from 'express';
+import bcrypt from 'bcryptjs';
+import { z } from 'zod';
+import {
+  User,
+  Domain,
+  Course,
+  Assignment,
+  Notification,
+  AuditLog,
+  AssignmentRule,
+} from '../models/index.js';
+import { authenticate, allow } from '../middlewares/auth.js';
+import { csrfProtection } from '../middlewares/csrf.js';
+import { csvUpload } from '../middlewares/csvUpload.js';
+import { validate } from '../middlewares/validate.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { AppError } from '../utils/AppError.js';
+import * as auth from '../services/authService.js';
+import * as resources from '../services/resourceService.js';
+import { importUsersCsv } from '../services/csvImportService.js';
+import { env } from '../config/env.js';
+import courseRoutes from './courses.js';
+import phase3Routes from './phase3.js';
+import phase3LearningRoutes from './phase3Learning.js';
+import operationsRoutes from './operations.js';
+import { evaluateRulesForEmployee } from '../services/phase3Service.js';
+import { complianceFor } from '../services/phase3LearningService.js';
+
+const r = Router();
+
+const ok = (res, data, message = 'OK', meta = {}) =>
+  res.json({ success: true, data, message, meta });
+
+// Sub-routers
+r.use(courseRoutes);
+r.use(phase3Routes);
+r.use(phase3LearningRoutes);
+r.use(operationsRoutes);
+
+// ---------------------------------------------------------------------------
+// Validation schemas
+// ---------------------------------------------------------------------------
+
+const objectId = z.string().regex(/^[a-f\d]{24}$/i);
+const idSchema = z.object({ id: objectId }).strict();
+const body = (schema) => validate({ body: schema });
+
+const listQ = z
+  .object({
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    search: z.string().max(100).optional(),
+    domainId: objectId.optional(),
+    role: z.enum(['admin', 'trainer', 'employee']).optional(),
+    status: z.string().max(30).optional(),
+    level: z.string().max(30).optional(),
+    location: z.string().max(100).optional(),
+  })
+  .strict();
+
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+
+const cookieOptions = {
+  httpOnly: true,
+  secure: env.COOKIE_SECURE === 'true',
+  sameSite: 'strict',
+  path: '/api/v1/auth',
+  maxAge: 7 * 864e5, // 7 days
+};
+
+const clearRefreshCookie = (res) =>
+  res.clearCookie('refreshToken', { ...cookieOptions, maxAge: undefined });
+
+r.post(
+  '/auth/login',
+  body(
+    z
+      .object({
+        email: z.string().email().max(254),
+        password: z.string().min(1).max(128),
+      })
+      .strict()
+  ),
+  asyncHandler(async (req, res) => {
+    const out = await auth.login(req.body.email, req.body.password, {
+      ip: req.ip,
+      userAgent: req.get('user-agent'),
+    });
+
+    res.cookie('refreshToken', out.refreshToken, cookieOptions);
+    ok(res, { user: out.user, accessToken: out.accessToken }, 'Signed in');
+  })
+);
+
+r.post(
+  '/auth/refresh',
+  csrfProtection,
+  asyncHandler(async (req, res) => {
+    let out;
+
+    try {
+      out = await auth.rotate(req.cookies?.refreshToken, {
+        ip: req.ip,
+        userAgent: req.get('user-agent'),
+      });
+    } catch (error) {
+      if (error?.statusCode === 401) clearRefreshCookie(res);
+      throw error;
+    }
+
+    res.cookie('refreshToken', out.refreshToken, cookieOptions);
+    ok(
+      res,
+      { user: out.user, accessToken: out.accessToken },
+      'Token refreshed'
+    );
+  })
+);
+
+r.post(
+  '/auth/logout',
+  authenticate,
+  allow('admin', 'trainer', 'employee'),
+  csrfProtection,
+  asyncHandler(async (req, res) => {
+    await auth.revoke(req.cookies?.refreshToken, req.user._id);
+    clearRefreshCookie(res);
+    ok(res, null, 'Signed out');
+  })
+);
+
+r.post(
+  '/auth/logout-all',
+  authenticate,
+  allow('admin', 'trainer', 'employee'),
+  asyncHandler(async (req, res) => {
+    await auth.revokeAll(req.user._id);
+    ok(res, null, 'All sessions revoked');
+  })
+);
+
+r.get(
+  '/auth/me',
+  authenticate,
+  allow('admin', 'trainer', 'employee'),
+  (req, res) => ok(res, { ...req.user.toJSON(), isManager: req.isManager })
+);
+
+r.post(
+  '/auth/change-password',
+  authenticate,
+  allow('admin', 'trainer', 'employee'),
+  body(
+    z
+      .object({
+        currentPassword: z.string(),
+        newPassword: z.string().min(10).max(128),
+      })
+      .strict()
+  ),
+  asyncHandler(async (req, res) => {
+    auth.passwordPolicy(req.body.newPassword, req.user);
+    await auth.passwordChange(
+      req.user._id,
+      req.body.currentPassword,
+      req.body.newPassword
+    );
+    ok(res, null, 'Password changed');
+  })
+);
+
+r.post(
+  '/auth/forgot-password',
+  body(z.object({ email: z.string().email() }).strict()),
+  asyncHandler(async (req, res) => {
+    await auth.forgotPassword(req.body.email);
+    ok(res, null, 'If the account exists, reset instructions will be sent');
+  })
+);
+
+r.post(
+  '/auth/reset-password',
+  body(
+    z
+      .object({
+        token: z.string(),
+        password: z.string().min(10).max(128),
+      })
+      .strict()
+  ),
+  asyncHandler(async (req, res) => {
+    await auth.resetPassword(req.body.token, req.body.password);
+    ok(res, null, 'Password reset');
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Users
+// ---------------------------------------------------------------------------
+
+r.get(
+  '/users',
+  authenticate,
+  allow('admin', 'manager'),
+  validate({ query: listQ }),
+  asyncHandler(async (req, res) => {
+    const v = await resources.listUsers(req.query, req.user);
+    ok(res, v.data, 'Users', v.meta);
+  })
+);
+
+r.post(
+  '/users',
+  authenticate,
+  allow('admin'),
+  body(
+    z
+      .object({
+        name: z.string().min(1).max(120),
+        email: z.string().email(),
+        phone: z.string().max(32).optional(),
+        password: z.string().min(10).max(128),
+        role: z.enum(['admin', 'trainer', 'employee']).optional(),
+        domainId: objectId.optional(),
+        trainerDomains: z.array(objectId).optional(),
+        designation: z.string().max(120).optional(),
+        level: z.string().optional(),
+        location: z.string().max(100).optional(),
+        tags: z.array(z.string().max(50)).max(100).optional(),
+        managerId: objectId.optional(),
+      })
+      .strict()
+  ),
+  asyncHandler(async (req, res) => {
+    auth.passwordPolicy(req.body.password, {
+      name: req.body.name,
+      email: req.body.email,
+    });
+
+    const input = {
+      ...req.body,
+      passwordHash: await bcrypt.hash(req.body.password, 12),
+    };
+    delete input.password;
+
+    ok(res, await resources.createUser(input, req.user), 'User created');
+  })
+);
+
+r.get(
+  '/users/:id',
+  authenticate,
+  allow('admin', 'manager', 'employee'),
+  validate({ params: idSchema }),
+  asyncHandler(async (req, res) =>
+    ok(res, await resources.getUser(req.params.id, req.user))
+  )
+);
+
+r.patch(
+  '/users/:id',
+  authenticate,
+  allow('admin', 'employee'),
+  validate({ params: idSchema }),
+  body(
+    z
+      .object({
+        name: z.string().max(120).optional(),
+        phone: z.string().max(32).optional(),
+        designation: z.string().max(120).optional(),
+        level: z
+          .enum(['new_joiner', 'junior', 'mid', 'senior', 'team_lead', 'manager'])
+          .optional(),
+        location: z.string().max(100).optional(),
+        role: z.enum(['admin', 'trainer', 'employee']).optional(),
+        domainId: objectId.optional(),
+        managerId: objectId.optional(),
+        trainerDomains: z.array(objectId).optional(),
+        tags: z.array(z.string().max(50)).max(100).optional(),
+      })
+      .strip()
+  ),
+  asyncHandler(async (req, res) => {
+    const previous = await User.findById(req.params.id).select('role');
+    const user = await resources.updateUser(req.params.id, req.body, req.user);
+
+    // Employee moved out of the employee role: cancel unstarted rule-based assignments
+    if (previous?.role === 'employee' && user.role !== 'employee') {
+      await Assignment.updateMany(
+        { employeeId: user._id, source: 'rule', status: 'not_started' },
+        { $set: { status: 'cancelled' } }
+      );
+    }
+
+    if (user.role === 'employee') await evaluateRulesForEmployee(user);
+
+    ok(res, user, 'User updated');
+  })
+);
+
+r.patch(
+  '/users/:id/status',
+  authenticate,
+  allow('admin'),
+  validate({ params: idSchema }),
+  body(z.object({ status: z.enum(['active', 'inactive']) }).strict()),
+  asyncHandler(async (req, res) =>
+    ok(
+      res,
+      await resources.changeUserStatus(req.params.id, req.body.status, req.user)
+    )
+  )
+);
+
+r.delete(
+  '/users/:id',
+  authenticate,
+  allow('admin'),
+  validate({ params: idSchema }),
+  asyncHandler(async (req, res) => {
+    await resources.deactivateUser(req.params.id, req.user);
+    ok(res, null, 'User deactivated');
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Domains
+// ---------------------------------------------------------------------------
+
+r.get(
+  '/domains',
+  authenticate,
+  allow('admin', 'trainer', 'employee'),
+  asyncHandler(async (_req, res) =>
+    ok(res, await Domain.find({ isActive: true }))
+  )
+);
+
+r.get(
+  '/domains/:id',
+  authenticate,
+  allow('admin', 'trainer', 'employee'),
+  validate({ params: idSchema }),
+  asyncHandler(async (req, res) => {
+    const d = await Domain.findById(req.params.id);
+    if (!d) throw new AppError(404, 'Domain not found');
+    ok(res, d);
+  })
+);
+
+r.post(
+  '/domains',
+  authenticate,
+  allow('admin'),
+  body(
+    z
+      .object({
+        name: z.string().min(1).max(100),
+        description: z.string().max(500).optional(),
+        isCommon: z.boolean().optional(),
+      })
+      .strict()
+  ),
+  asyncHandler(async (req, res) =>
+    ok(res, await resources.createDomain(req.body, req.user), 'Domain created')
+  )
+);
+
+r.patch(
+  '/domains/:id',
+  authenticate,
+  allow('admin'),
+  validate({ params: idSchema }),
+  body(
+    z
+      .object({
+        name: z.string().max(100).optional(),
+        description: z.string().max(500).optional(),
+        isActive: z.boolean().optional(),
+      })
+      .strict()
+  ),
+  asyncHandler(async (req, res) =>
+    ok(res, await resources.updateDomain(req.params.id, req.body, req.user))
+  )
+);
+
+r.delete(
+  '/domains/:id',
+  authenticate,
+  allow('admin'),
+  validate({ params: idSchema }),
+  asyncHandler(async (req, res) => {
+    const [hasUsers, hasCourses] = await Promise.all([
+      User.exists({ domainId: req.params.id, status: 'active' }),
+      Course.exists({ domainId: req.params.id, status: { $ne: 'archived' } }),
+    ]);
+
+    if (hasUsers || hasCourses) {
+      throw new AppError(409, 'Domain has active users or courses', 'CONFLICT');
+    }
+
+    await resources.deactivateDomain(req.params.id, req.user);
+    ok(res, null, 'Domain deactivated');
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Generic list endpoints (assignments, certificates, rules)
+// ---------------------------------------------------------------------------
+
+const mounts = {
+  assignments: ['admin', 'manager'],
+  certificates: ['admin', 'manager'],
+  rules: ['admin', 'trainer'],
+};
+
+for (const [path, roles] of Object.entries(mounts)) {
+  r.get(
+    `/${path}`,
+    authenticate,
+    allow(...roles),
+    validate({ query: listQ }),
+    asyncHandler(async (req, res) => {
+      const v = await resources.genericList(path, {
+        query: req.query,
+        actor: req.user,
+      });
+      ok(res, v.data, path, v.meta);
+    })
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Assignments
+// ---------------------------------------------------------------------------
+
+r.post(
+  '/assignments',
+  authenticate,
+  allow('admin', 'manager'),
+  body(
+    z
+      .object({
+        employeeId: objectId,
+        courseId: objectId,
+        dueDate: z.string().datetime({ offset: true }).optional(),
+      })
+      .strict()
+  ),
+  asyncHandler(async (req, res) =>
+    ok(
+      res,
+      await resources.createManualAssignment(req.body, req.user),
+      'Assignment created'
+    )
+  )
+);
+
+// Must stay above '/assignments/:id' so "me" is not treated as an id
+r.get(
+  '/assignments/me',
+  authenticate,
+  allow('employee'),
+  asyncHandler(async (req, res) =>
+    ok(
+      res,
+      await Assignment.find({ employeeId: req.user._id })
+        .populate({
+          path: 'courseId',
+          select: 'title courseCode description domainId modules',
+          populate: { path: 'domainId', select: 'name' },
+        })
+        .sort({ dueDate: 1 })
+    )
+  )
+);
+
+r.get(
+  '/assignments/:id',
+  authenticate,
+  allow('admin', 'manager', 'employee'),
+  validate({ params: idSchema }),
+  asyncHandler(async (req, res) => {
+    const filter = { _id: req.params.id };
+
+    if (req.user.role === 'employee') {
+      filter.employeeId = req.user._id;
+    }
+
+    if (req.user.role === 'manager') {
+      const reportIds = await User.find({ managerId: req.user._id }).distinct(
+        '_id'
+      );
+      filter.employeeId = { $in: reportIds };
+    }
+
+    const a = await Assignment.findOne(filter).populate('courseId');
+    if (!a) throw new AppError(404, 'Assignment not found');
+
+    ok(res, a);
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Assignment rules
+// ---------------------------------------------------------------------------
+
+r.post(
+  '/rules',
+  authenticate,
+  allow('admin'),
+  body(
+    z
+      .object({
+        name: z.string(),
+        courseId: objectId,
+        isActive: z.boolean().optional(),
+        conditions: z.array(z.record(z.any())).optional(),
+        matchType: z.enum(['all', 'any']).optional(),
+        recurrence: z.string().optional(),
+        dueInDays: z.number().optional(),
+      })
+      .strict()
+  ),
+  asyncHandler(async (req, res) =>
+    ok(res, await AssignmentRule.create(req.body), 'Rule created')
+  )
+);
+
+// ---------------------------------------------------------------------------
+// Health checks
+// ---------------------------------------------------------------------------
+
+r.get('/health', (_req, res) => ok(res, { status: 'ok' }));
+
+r.get(
+  '/health/ready',
+  asyncHandler(async (_req, res) => {
+    const mongoose = await import('mongoose');
+
+    if (mongoose.default.connection.readyState !== 1) {
+      throw new AppError(503, 'Database unavailable', 'NOT_READY');
+    }
+
+    ok(res, { status: 'ready' });
+  })
+);
+
+// ---------------------------------------------------------------------------
+// CSV import, compliance, domain stats and trainers
+// ---------------------------------------------------------------------------
+
+r.post(
+  '/users/import',
+  authenticate,
+  allow('admin'),
+  csvUpload.single('file'),
+  // Move the uploaded file's text into req.body.csv (reject binary content)
+  (req, _res, next) => {
+    req.body = req.body || {};
+
+    if (req.file) {
+      if (req.file.buffer.includes(0)) {
+        return next(new AppError(400, 'Invalid CSV file', 'CSV_INVALID'));
+      }
+      req.body.csv = req.file.buffer.toString('utf8');
+    }
+
+    next();
+  },
+  body(z.object({ csv: z.string().max(2 * 1024 * 1024).optional() }).strict()),
+  asyncHandler(async (req, res) => {
+    const result = await importUsersCsv(req.body.csv, req.user);
+
+    ok(
+      res,
+      { created: result.created, errors: result.errors },
+      'Import processed',
+      {
+        received: result.received,
+        created: result.created,
+        failed: result.errors.length,
+      }
+    );
+  })
+);
+
+r.get(
+  '/users/:id/compliance',
+  authenticate,
+  allow('admin', 'manager', 'employee'),
+  validate({ params: idSchema }),
+  asyncHandler(async (req, res) => {
+    const user = await resources.getUser(req.params.id, req.user);
+    ok(res, await complianceFor(user), 'Compliance summary');
+  })
+);
+
+r.get(
+  '/domains/:id/stats',
+  authenticate,
+  allow('admin', 'trainer'),
+  validate({ params: idSchema }),
+  asyncHandler(async (req, res) => {
+    const d = await Domain.findById(req.params.id);
+
+    if (
+      !d ||
+      (req.user.role === 'trainer' &&
+        !req.user.trainerDomains.some((x) => String(x) === String(d._id)))
+    ) {
+      throw new AppError(404, 'Domain not found');
+    }
+
+    const [users, courses, assignments] = await Promise.all([
+      User.countDocuments({
+        domainId: d._id,
+        status: 'active',
+        deletedAt: null,
+      }),
+      Course.countDocuments({ domainId: d._id }),
+      Assignment.countDocuments({
+        courseId: { $in: await Course.find({ domainId: d._id }).distinct('_id') },
+      }),
+    ]);
+
+    ok(res, {
+      domainId: d._id,
+      activeUsers: users,
+      courses,
+      assignments,
+    });
+  })
+);
+
+r.put(
+  '/domains/:id/trainers',
+  authenticate,
+  allow('admin'),
+  validate({ params: idSchema }),
+  body(z.object({ trainerIds: z.array(objectId).max(100) }).strict()),
+  asyncHandler(async (req, res) => {
+    const domain = await Domain.findById(req.params.id);
+    if (!domain) throw new AppError(404, 'Domain not found');
+
+    const trainers = await User.find({
+      _id: { $in: req.body.trainerIds },
+      role: 'trainer',
+      deletedAt: null,
+    });
+
+    if (trainers.length !== new Set(req.body.trainerIds).size) {
+      throw new AppError(422, 'All trainerIds must identify active trainers');
+    }
+
+    const trainerIds = trainers.map((t) => t._id);
+    const before = await User.find({ trainerDomains: domain._id }).distinct(
+      '_id'
+    );
+
+    // Replace the domain's trainer set
+    await User.updateMany(
+      { trainerDomains: domain._id },
+      { $pull: { trainerDomains: domain._id } }
+    );
+    await User.updateMany(
+      { _id: { $in: trainerIds } },
+      { $addToSet: { trainerDomains: domain._id } }
+    );
+
+    await AuditLog.create({
+      actorId: req.user._id,
+      action: 'domain.trainers.update',
+      entityType: 'Domain',
+      entityId: domain._id,
+      before: { trainerIds: before },
+      after: { trainerIds },
+    });
+
+    ok(res, { domainId: domain._id, trainerIds });
+  })
+);
+
 export default r;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

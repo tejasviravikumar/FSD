@@ -1,5 +1,6 @@
 import {Assignment,AssignmentRule,Assessment,Attempt,AuditLog,Certificate,CertificateCounter,Course,Domain,ModuleProgress,Settings} from '../models/index.js';
 import {AppError} from '../utils/AppError.js';
+import {courseEligibilityMatches} from '../utils/courseEligibility.js';
 import {matchesRule} from './phase3Service.js';
 
 const safeQuestion=q=>({text:q.text,type:q.type,options:q.options.map(o=>({id:String(o._id),text:o.text})),marks:q.marks});
@@ -29,18 +30,6 @@ export async function issueCertificate({assignmentId,employeeId,course,issuedBy}
 }
 export async function repairCertificates(actor){let created=0,repaired=0;const completed=await Assignment.find({status:'completed'}).populate('courseId');for(const assignment of completed){if(!await Certificate.exists({assignmentId:assignment._id})&&assignment.courseId){await issueCertificate({assignmentId:assignment._id,employeeId:assignment.employeeId,course:assignment.courseId,issuedBy:actor._id});created++}}const certs=await Certificate.find({assignmentId:{$ne:null}});for(const cert of certs){let assignment=await Assignment.findById(cert.assignmentId);if(!assignment){const course=await Course.findById(cert.courseId);if(course){try{await Assignment.create({_id:cert.assignmentId,employeeId:cert.employeeId,courseId:course._id,courseVersion:course.version,status:'completed',progressPercent:100,completedAt:cert.issueDate,source:'onboarding'});repaired++}catch(error){if(error.code!==11000)throw error}}}else if(assignment.status!=='completed'){await Assignment.updateOne({_id:assignment._id,status:{$ne:'completed'}},{$set:{status:'completed',completedAt:cert.issueDate,progressPercent:100}});repaired++}}return {created,repaired};}
 export async function getCertificateStatus(certificate,days=60){if(certificate.status==='revoked'||certificate.status==='pending_verification'||!certificate.expiryDate)return certificate.status;const soon=Number((await Settings.findOne({key:'certificateExpiringSoonDays'}))?.value??days);const remaining=(certificate.expiryDate.getTime()-Date.now())/86400000;return remaining<0?'expired':remaining<=soon?'expiring_soon':'valid'}
-const list = value => value === undefined ? [] : Array.isArray(value) ? value : [value];
-function eligibilityMatches(employee, eligibility = {}) {
-  const filters = [
-    ['role', 'roles', employee.role], ['domainId', 'domains', employee.domainId],
-    ['level', 'levels', employee.level], ['designation', 'designations', employee.designation],
-    ['location', 'locations', employee.location],
-  ];
-  return filters.every(([singular, plural, actual]) => {
-    const expected = eligibility[plural] ?? eligibility[singular];
-    return expected === undefined || list(expected).some(value => String(value) === String(actual ?? ''));
-  });
-}
 export async function complianceFor(employee) {
   const common = await Domain.findOne({ isCommon: true, isActive: true }).select('_id');
   const domainIds = [employee.domainId, common?._id].filter(Boolean);
@@ -51,11 +40,11 @@ export async function complianceFor(employee) {
   ]);
   const applicableRuleIds = new Set(rules.filter(rule => matchesRule(employee, rule)).map(rule => String(rule.courseId)));
   const courseMap = new Map();
-  for (const course of baseCourses) if (eligibilityMatches(employee, course.eligibility)) courseMap.set(String(course._id), course);
+  for (const course of baseCourses) if (courseEligibilityMatches(employee, course.eligibility)) courseMap.set(String(course._id), course);
   for (const courseId of assignedCourseIds) applicableRuleIds.add(String(courseId));
   if (applicableRuleIds.size) {
     const ruleCourses = await Course.find({ _id: { $in: [...applicableRuleIds] }, status: { $in: ['published', 'archived'] } });
-    for (const course of ruleCourses) if (eligibilityMatches(employee, course.eligibility)) courseMap.set(String(course._id), course);
+    for (const course of ruleCourses) if (courseEligibilityMatches(employee, course.eligibility)) courseMap.set(String(course._id), course);
   }
   const items = [];
   for (const course of courseMap.values()) {

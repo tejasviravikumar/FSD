@@ -21,13 +21,11 @@ Designation email groups use employee numbers `01, 10, 19, 28` for `software.eng
 
 - 7 domains: Software / IT, Manufacturing, Finance, HR, Sales & Marketing, Logistics, and Common.
 - 2 trainers per domain.
-- 15 published courses, each assigned one trainer as its owner. Courses display a short code such as `NX-A4K82P9Q`; MongoDB ObjectIds remain internal.
-- 7 active assignment rules, one per domain.
-- 40 manager and employee accounts, with manager relationships, and 40 assignments across several statuses.
-- Certificates in valid, expiring, expired, and pending-verification states.
-- Seeded courses include public YouTube lessons verified as embeddable, plus built-in reading modules.
-- To repair an existing seeded database without wiping it, run `npm run repair:demo-resources` with its Nexora database configured in `.env`.
-- See [Course resources](COURSE_RESOURCES.md) for video verification results, topics and database repair steps.
+- 7 domains and 14 trainers, with two trainers assigned to each domain.
+- 4 department managers and 36 employee accounts, with manager relationships.
+- One published **Code of Conduct** course with a 10-question quiz, assigned only to `software.engineering10@nexora.example`.
+- The Code of Conduct course is in the Common domain and is assigned directly to that employee; it is not assigned to the other seeded users.
+- To create a fresh demo dataset, run `npm run seed` with a Nexora demo database configured in `.env`.
 
 ### Trainer domain access
 

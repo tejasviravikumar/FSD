@@ -1,11 +1,138 @@
 import fs from 'node:fs';
-const source=['index','courses','phase3','phase3Learning','operations'].map(file=>fs.readFileSync(new URL(`../src/routes/${file}.js`,import.meta.url),'utf8')).join('\n');
-const mountMatch=source.match(/const mounts=\{([^}]+)\}/),dynamicRoles={};
-for(const match of (mountMatch?.[1]||'').matchAll(/(\w+):\[([^\]]+)\]/g))dynamicRoles[match[1]]=Array.from(match[2].matchAll(/['"](admin|trainer|employee|manager|public)['"]/g),role=>role[1].toUpperCase());
-const publicRoutes=new Set(['POST /auth/login','POST /auth/refresh','POST /auth/forgot-password','POST /auth/reset-password','GET /health','GET /health/ready','GET /certificates/verify/:certificateNumber']);
-function registrations(text){const found=[];const re=/\br\.(get|post|put|patch|delete)\s*\(/g;let m;while((m=re.exec(text))){const start=m.index;let i=re.lastIndex,depth=1,quote='',escape=false;for(;i<text.length&&depth;i++){const c=text[i];if(escape){escape=false;continue}if(c==='\\'){escape=true;continue}if(quote){if(c===quote)quote='';continue}if(c==='"'||c==="'"||c==='`'){quote=c;continue}if(c==='(')depth++;else if(c===')')depth--}const call=text.slice(start,i),head=call.match(/^r\.(get|post|put|patch|delete)\s*\(\s*([^,]+)/);if(!head)continue;let route=head[2].trim().replace(/^['"`]|['"`]$/g,'');if(route==='/${path}')for(const x of Object.keys(dynamicRoles))found.push({method:head[1].toUpperCase(),path:`/${x}`,call});else found.push({method:head[1].toUpperCase(),path:route,call})}return found}
-const routes=registrations(source).filter(x=>x.path!=='/reports/:name').map(x=>{const m=x.call.match(/\ballow\(([^)]*)\)/),roles=m?Array.from(m[1].matchAll(/['"](admin|trainer|employee|manager|public)['"]/g),z=>z[1].toUpperCase()):[];if(!roles.length&&dynamicRoles[x.path.slice(1)])roles.push(...dynamicRoles[x.path.slice(1)]);const protectedRoute=/\bauthenticate\b/.test(x.call);const key=`${x.method} ${x.path}`;const isPublic=publicRoutes.has(key);return{...x,roles:roles.length?roles:isPublic?['PUBLIC']:[],protectedRoute}}).filter((route,index,all)=>all.findIndex(other=>other.method===route.method&&other.path===route.path)===index);
-const missing=routes.filter(x=>!x.roles.length);if(missing.length){console.error('Routes missing explicit access roles:',missing.map(x=>`${x.method} ${x.path}`).join(', '));process.exitCode=1}
-const lines=['# RBAC matrix','',"Generated from `src/routes/*.js` by `npm run rbac:matrix`. `A` admin, `T` trainer, `E` employee, `M` manager, `P` public.",'','| Method | Path | Roles | Protected |','|---|---|---|:---:|',...routes.map(x=>`| ${x.method} | ${x.path} | ${x.roles.join(', ')} | ${x.protectedRoute?'yes':'no'} |`),''];
-if(!process.exitCode)fs.writeFileSync(new URL('../docs/RBAC_MATRIX.md',import.meta.url),lines.join('\n'));
-export {routes};
+
+const ROUTE_FILES = ['index', 'courses', 'phase3', 'phase3Learning', 'operations'];
+const ROLE_PATTERN = /['"](admin|trainer|employee|manager|public)['"]/g;
+
+const PUBLIC_ROUTES = new Set([
+  'POST /auth/login',
+  'POST /auth/refresh',
+  'POST /auth/forgot-password',
+  'POST /auth/reset-password',
+  'GET /health',
+  'GET /health/ready',
+  'GET /certificates/verify/:certificateNumber',
+]);
+
+
+const source = ROUTE_FILES.map(file =>
+  fs.readFileSync(new URL(`../src/routes/${file}.js`, import.meta.url), 'utf8'),
+).join('\n');
+
+
+const mountMatch = source.match(/const mounts=\{([^}]+)\}/);
+const dynamicRoles = {};
+
+for (const match of (mountMatch?.[1] || '').matchAll(/(\w+):\[([^\]]+)\]/g)) {
+  dynamicRoles[match[1]] = Array.from(match[2].matchAll(ROLE_PATTERN), role =>
+    role[1].toUpperCase(),
+  );
+}
+
+function registrations(text) {
+  const found = [];
+  const re = /\br\.(get|post|put|patch|delete)\s*\(/g;
+  let m;
+
+  while ((m = re.exec(text))) {
+    const start = m.index;
+    let i = re.lastIndex;
+    let depth = 1;
+    let quote = '';
+    let escape = false;
+
+    // Scan to the matching closing paren, skipping over string literals
+    for (; i < text.length && depth; i++) {
+      const c = text[i];
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (c === '\\') {
+        escape = true;
+        continue;
+      }
+      if (quote) {
+        if (c === quote) quote = '';
+        continue;
+      }
+      if (c === '"' || c === "'" || c === '`') {
+        quote = c;
+        continue;
+      }
+      if (c === '(') depth++;
+      else if (c === ')') depth--;
+    }
+
+    const call = text.slice(start, i);
+    const head = call.match(/^r\.(get|post|put|patch|delete)\s*\(\s*([^,]+)/);
+    if (!head) continue;
+
+    const route = head[2].trim().replace(/^['"`]|['"`]$/g, '');
+    const method = head[1].toUpperCase();
+
+    if (route === '/${path}') {
+      for (const x of Object.keys(dynamicRoles)) {
+        found.push({ method, path: `/${x}`, call });
+      }
+    } else {
+      found.push({ method, path: route, call });
+    }
+  }
+
+  return found;
+}
+
+const routes = registrations(source)
+  .filter(x => x.path !== '/reports/:name')
+  .map(x => {
+    const allowMatch = x.call.match(/\ballow\(([^)]*)\)/);
+    const roles = allowMatch
+      ? Array.from(allowMatch[1].matchAll(ROLE_PATTERN), z => z[1].toUpperCase())
+      : [];
+
+    if (!roles.length && dynamicRoles[x.path.slice(1)]) {
+      roles.push(...dynamicRoles[x.path.slice(1)]);
+    }
+
+    const protectedRoute = /\bauthenticate\b/.test(x.call);
+    const key = `${x.method} ${x.path}`;
+    const isPublic = PUBLIC_ROUTES.has(key);
+
+    return {
+      ...x,
+      roles: roles.length ? roles : isPublic ? ['PUBLIC'] : [],
+      protectedRoute,
+    };
+  })
+  .filter(
+    (route, index, all) =>
+      all.findIndex(other => other.method === route.method && other.path === route.path) === index,
+  );
+
+const missing = routes.filter(x => !x.roles.length);
+if (missing.length) {
+  console.error(
+    'Routes missing explicit access roles:',
+    missing.map(x => `${x.method} ${x.path}`).join(', '),
+  );
+  process.exitCode = 1;
+}
+
+const lines = [
+  '# RBAC matrix',
+  '',
+  "Generated from `src/routes/*.js` by `npm run rbac:matrix`. `A` admin, `T` trainer, `E` employee, `M` manager, `P` public.",
+  '',
+  '| Method | Path | Roles | Protected |',
+  '|---|---|---|:---:|',
+  ...routes.map(
+    x => `| ${x.method} | ${x.path} | ${x.roles.join(', ')} | ${x.protectedRoute ? 'yes' : 'no'} |`,
+  ),
+  '',
+];
+
+if (!process.exitCode) {
+  fs.writeFileSync(new URL('../docs/RBAC_MATRIX.md', import.meta.url), lines.join('\n'));
+}
+
+export { routes };

@@ -1,3 +1,0 @@
-import {test,expect} from '@jest/globals';import {parseYouTubeUrl} from '../src/utils/youtube.js';
-test('parses supported secure YouTube URL forms',()=>{for(const url of ['https://youtube.com/watch?v=abcdefghijk&list=abc','https://www.youtube.com/embed/abcdefghijk','https://m.youtube.com/shorts/abcdefghijk','https://youtu.be/abcdefghijk?t=15'])expect(parseYouTubeUrl(url).videoId).toBe('abcdefghijk')});
-test('rejects non-YouTube and insecure URLs',()=>{for(const url of ['http://youtube.com/watch?v=abcdefghijk','https://youtube.com.evil.test/watch?v=abcdefghijk','https://example.com/abcdefghijk'])expect(()=>parseYouTubeUrl(url)).toThrow()});

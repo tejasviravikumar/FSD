@@ -1,2 +1,27 @@
 import { AppError } from '../utils/AppError.js';
-export const validate=schemas=>(req,_res,next)=>{for(const key of ['body','query','params'])if(schemas[key]){const r=schemas[key].safeParse(req[key]);if(!r.success)return next(new AppError(400,'Validation failed','VALIDATION_ERROR',r.error.issues.map(i=>({field:i.path.join('.'),message:i.message}))));req[key]=r.data}next()};
+
+const PARTS = ['body', 'query', 'params'];
+
+export const validate = (schemas) => (req, _res, next) => {
+  for (const key of PARTS) {
+    if (!schemas[key]) continue;
+
+    const result = schemas[key].safeParse(req[key]);
+
+    if (!result.success) {
+      const errors = result.error.issues.map((issue) => ({
+        field: issue.path.join('.'),
+        message: issue.message,
+      }));
+
+      return next(
+        new AppError(400, 'Validation failed', 'VALIDATION_ERROR', errors)
+      );
+    }
+
+    // Replace the raw input with the parsed (coerced and cleaned) data
+    req[key] = result.data;
+  }
+
+  next();
+};

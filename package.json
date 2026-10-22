@@ -21,7 +21,9 @@
     "videos:verify": "node scripts/verify-course-videos.mjs",
     "client:dev": "npm --prefix frontend run dev -- --host 0.0.0.0",
     "client:build": "npm --prefix frontend run build",
-    "client:preview": "npm --prefix frontend run preview -- --host 0.0.0.0"
+    "client:preview": "npm --prefix frontend run preview -- --host 0.0.0.0",
+    "seed:compliance": "node scripts/seed-compliance.js",
+    "ensure:code-of-conduct": "node scripts/ensure-code-of-conduct-assignment.js"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.1",
