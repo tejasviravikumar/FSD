@@ -8,7 +8,7 @@ React + Vite application for the Nexora Industries training API.
 2. Copy `frontend/.env.example` to `frontend/.env` and set `VITE_API_URL` if the API is not at `http://localhost:4000/api/v1`.
 3. From this folder, run `npm ci`, then `npm run dev`.
 
-The frontend runs at the Vite URL, normally `http://localhost:5173`. The backend must allow that origin in `CORS_ORIGINS`.
+The frontend runs at the Vite URL, normally `http://localhost:5173`. The backend must allow that origin in `CORS_ORIGIN`.
 
 ## Structure
 

@@ -16,7 +16,7 @@ const schema = z.object({
   JWT_AUDIENCE: z.string().default('nexora-training-client'),
 
   // Web
-  CORS_ORIGINS: z.string().default('http://localhost:5173'),
+  CORS_ORIGIN: z.string().default('http://localhost:5173'),
   COOKIE_SECURE: z.enum(['true', 'false']).default('false'),
   TIMEZONE: z.string().default('Asia/Kolkata'),
 
@@ -70,11 +70,11 @@ if (isProduction && result.data.MAILER_TRANSPORT !== 'smtp') {
 }
 
 // CORS origins
-const origins = result.data.CORS_ORIGINS.split(',').map((x) => x.trim());
+const origins = result.data.CORS_ORIGIN.split(',').map((x) => x.trim());
 
 if (origins.includes('*')) {
   throw new Error(
-    'CORS_ORIGINS must not use a wildcard with credentialed requests'
+    'CORS_ORIGIN must not use a wildcard with credentialed requests'
   );
 }
 

@@ -27,7 +27,7 @@ API base URL is `http://localhost:4000/api/v1`. Swagger UI is served at `/api/do
 | `MONGODB_URI` | MongoDB connection string, including the database name. |
 | `JWT_SECRET` | Signing secret, minimum 32 characters; production rejects common placeholders. |
 | `JWT_ISSUER`, `JWT_AUDIENCE` | JWT validation values; have application defaults. |
-| `CORS_ORIGINS` | Comma-separated exact browser origins; defaults to `http://localhost:5173`. |
+| `CORS_ORIGIN` | Comma-separated exact browser origins; defaults to `http://localhost:5173`. |
 | `COOKIE_SECURE` | `true` or `false`; production requires `true`. |
 | `TIMEZONE` | Cron schedule timezone; defaults to `Asia/Kolkata`. |
 | `UPLOAD_DIR` | Private local upload storage; defaults to `./private_uploads`. |

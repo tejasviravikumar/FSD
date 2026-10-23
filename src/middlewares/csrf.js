@@ -1,7 +1,7 @@
 import { env } from '../config/env.js';
 import { AppError } from '../utils/AppError.js';
 
-const allowedOrigins = env.CORS_ORIGINS.split(',')
+const allowedOrigins = env.CORS_ORIGIN.split(',')
   .map((x) => x.trim())
   .filter(Boolean);
 

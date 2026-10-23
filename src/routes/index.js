@@ -65,8 +65,8 @@ const listQ = z
 
 const cookieOptions = {
   httpOnly: true,
-  secure: env.COOKIE_SECURE === 'true',
-  sameSite: 'strict',
+  secure: true,
+  sameSite: 'none',
   path: '/api/v1/auth',
   maxAge: 7 * 864e5, // 7 days
 };
