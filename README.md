@@ -5,7 +5,7 @@ Node.js 22.12+, Express 4, MongoDB, and Mongoose backend for employee learning a
 ## Setup
 
 1. Install Node.js 22.12+ and have a MongoDB database available.
-2. Configure the project-root `.env` file. Set `MONGODB_URI` to include the intended database name (for example `/nexora_training`) and set `JWT_SECRET` to a random value of at least 32 characters. Keep `.env` private; it is ignored by Git.
+2. Create the project-root `.env` from `.env.example` (`Copy-Item .env.example .env` in PowerShell). Set `MONGODB_URI` to a running MongoDB instance and set `JWT_SECRET` to a random value of at least 32 characters. Keep `.env` private; it is ignored by Git. The example URI expects MongoDB on this computer at `127.0.0.1:27017`.
 3. Run `npm ci`.
 4. For an empty demo database, run `npm run seed`. This deletes application documents and uploaded files in the configured database and repopulates demo data. The seed script refuses `NODE_ENV=production` and database names without “Nexora”. Back up any data you need first.
 5. Run `npm run dev` during development or `npm start` to start the API normally.

@@ -3,3 +3,6 @@ node_modules/
 private_uploads/
 coverage/
 docs/.course-video-search-cache.json
+
+.vercel
+.env*
